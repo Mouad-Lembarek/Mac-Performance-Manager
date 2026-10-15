@@ -1956,6 +1956,7 @@ session_init() {
   S_CMD=""; S_FORCE=0; S_EOF_N=0; S_DISK_HINT=""; S_RECO_PRINTED=0; S_PRECISE_TS=0; S_PRECISE_N=0
   S_IDLE_BASE=""; S_AP_SKIP=" "; S_AP=""; S_AP_LAST=0; S_AP_N=0; S_AP_WATCH=""; S_AUTO_SEEN=""
   S_PAUSE_TS=0; S_PAUSE_DEV=0; S_INEFF_TS=0; S_INEFF_DEV=0
+  S_HIGH_TOTAL=0; S_HIGH_SINCE=0; S_ACTION_LOG=""
   if [ -t 0 ]; then S_INPUT=tty; elif [ -p /dev/stdin ]; then S_INPUT=pipe; else S_INPUT=none; fi
 }
 
@@ -1981,6 +1982,7 @@ session_note() {   # AUTO|USER|AFTER text  (bounded, names and PIDs only; also l
     USER) S_USER=$(printf '%s\n%s\n' "$S_USER" "$line" | awk 'NF' | tail -n 40); S_USER_N=$((S_USER_N + 1)); log_event ACTION "$2" ;;
     AFTER) S_AFTER=$(printf '%s\n%s\n' "$S_AFTER" "$line" | awk 'NF' | tail -n 40); log_event INFO "$2" ;;
   esac
+  S_ACTION_LOG=$(printf '%s\n%s\t%s\n' "$S_ACTION_LOG" "$1" "$line" | awk 'NF' | tail -n 80)
 }
 
 # Sets S_CPU_MS: CPU time used so far by this shell and every helper it has waited for.
@@ -2090,8 +2092,12 @@ session_recovery() {   # now
 session_update_mode() {   # now
   local now=$1 old=$S_MODE new target reason
   case $VERDICT in HIGH|CRITICAL) new=HIGH ;; WATCH) new=ELEVATED ;; OK) new=NORMAL ;; *) new=$old ;; esac
+  if [ "$old" = HIGH ] && [ "$new" != HIGH ] && [ "$S_HIGH_SINCE" != 0 ]; then
+    S_HIGH_TOTAL=$((S_HIGH_TOTAL + now - S_HIGH_SINCE)); S_HIGH_SINCE=0
+  fi
   [ "$old" = HIGH ] && [ "$new" != HIGH ] && session_recovery "$now"
   if [ "$new" = HIGH ] && [ "$old" != HIGH ]; then
+    S_HIGH_SINCE=$now
     S_PROBLEM_TS=$now; S_PROBLEM_USER_N=$S_USER_N; S_PROBLEM_GROUPS=$(group_totals)
     session_pressure_brief; S_LAST_HINT_TS=$now
   elif [ "$new" = HIGH ] && [ $((now - S_LAST_HINT_TS)) -ge $((NOTIFY_COOLDOWN_MIN * 60)) ]; then
@@ -2696,6 +2702,19 @@ session_report() {   # now
     echo "  Largest groups at the lowest free estimate (ps RSS: compressed memory not included, so heavy apps can be undercounted):"
     printf '%s\n' "$S_WORST_GROUPS" | awk -F'\t' 'NF >= 6 { printf "    - %s ~%.1f GB (%d processes, %.0f%% CPU)\n", $1, $4 / 1048576, $3, $6 }'
   fi
+  local high_dur=$S_HIGH_TOTAL
+  if [ "$S_HIGH_SINCE" != 0 ]; then high_dur=$((high_dur + now - S_HIGH_SINCE)); fi
+  if [ "$high_dur" -gt 0 ]; then
+    printf '  High pressure: %s total (of %s session time, %d%%)\n' \
+      "$(fmt_duration "$high_dur")" "$(fmt_duration $((now - S_START)))" $((high_dur * 100 / (now - S_START + 1)))
+  fi
+  echo "  Automatic rule summary:"
+  printf '    - idle TypeScript servers: %s' "$( [ "$AUTO_STOP_IDLE_TSSERVER" = true ] && echo "enabled (idle >= ${AUTO_TSSERVER_IDLE_MIN} min)" || echo "disabled")"
+  if [ "$S_PAUSE_TS" = 1 ]; then printf ' -> PAUSED after %d ineffective stop(s)\n' "$S_INEFF_TS"
+  elif [ "$S_AP_N" -ge "$AUTO_MAX_ACTIONS" ]; then printf ' -> stopped: session action limit reached\n'
+  else printf '\n'; fi
+  printf '    - idle dev servers: %s\n' "$( [ "$AUTO_STOP_IDLE_DEVSERVER" = true ] && echo "enabled (idle >= ${AUTO_DEVSERVER_IDLE_MIN} min)" || echo "disabled")"
+  printf '    - actions taken: %d of %d max; ineffective: ts %d, dev %d\n' "$S_AP_N" "$AUTO_MAX_ACTIONS" "$S_INEFF_TS" "$S_INEFF_DEV"
   echo "  Automatic actions (the manager's own behaviour; they do not free memory for other apps):"
   printf '%s\n' "${S_AUTO:-none}" | sed 's/^/    - /'
   cpu_ms=${S_CPU_MS:-}
@@ -2713,6 +2732,15 @@ session_report() {   # now
   echo "  Your decisions:"; printf '%s\n' "${S_USER:-none}" | sed 's/^/    - /'
   echo "  Measured after your actions / recoveries (correlation, not proof: other apps changed too):"
   printf '%s\n' "${S_AFTER:-none}" | sed 's/^/    - /'
+  if [ -n "$S_ACTION_LOG" ]; then
+    echo "  Actions and effects (chronological; each action paired with its measured result):"
+    printf '%s\n' "$S_ACTION_LOG" | awk -F'\t' '{
+      tag = $1; sub(/^[^\t]*\t/, "")
+      if (tag == "AUTO")  printf "    - [auto]  %s\n", $0
+      else if (tag == "USER")  printf "    - [user]  %s\n", $0
+      else if (tag == "AFTER") printf "      -> %s\n", $0
+    }'
+  fi
   echo "  Remaining bottlenecks:"
   local any=0
   case $VERDICT in WATCH|HIGH|CRITICAL) echo "    - memory: $VERDICT_REASON"; any=1 ;; esac
