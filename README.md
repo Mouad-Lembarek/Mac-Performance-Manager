@@ -1,5 +1,10 @@
 # Mac Performance Manager
 
+[![CI](https://github.com/Mouad-Lembarek/Mac-Performance-Manager/actions/workflows/ci.yml/badge.svg)](https://github.com/Mouad-Lembarek/Mac-Performance-Manager/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-000000?logo=apple)
+![Bash 3.2+](https://img.shields.io/badge/Bash-3.2%2B-4EAA25?logo=gnubash&logoColor=white)
+
 A lightweight terminal tool that helps you keep an 8 GB Apple Silicon Mac responsive
 while working with Cursor, AI agents, Brave, ChatGPT, Node.js, Python and Docker.
 
@@ -19,7 +24,8 @@ less at once. This tool tells you, with measurements, *what* to close.
 ## Installation
 
 ```bash
-cd mac-performance-manager
+git clone https://github.com/Mouad-Lembarek/Mac-Performance-Manager.git
+cd Mac-Performance-Manager
 chmod +x mac-performance-manager.sh
 ./mac-performance-manager.sh
 ```
@@ -596,3 +602,9 @@ A third fix concerns work mode, not termination:
 - `ps` CPU% is a recent average; precise CPU needs the 1-second `top` sample used in diagnostics.
 - Recommendations name the biggest measured consumers. They cannot know which window,
   tab or server you still need.
+
+---
+
+## License
+
+[MIT](LICENSE)
