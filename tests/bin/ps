@@ -1,0 +1,87 @@
+#!/bin/bash
+# Test stub for ps.
+#   ps -A...                    -> fixtures/ps.txt (the process table), unless MPM_REAL_PS=1
+#   ps -o FIELDS -p FIXTURE_PIDS -> fixtures/ps_detail.tsv (pid, etime, args)
+#   anything else               -> the real /bin/ps (real, throw-away test processes)
+# Fault injection for ONE disposable test process (never any other PID):
+#   MPM_FAKE_PS_PID=<pid> MPM_FAKE_PS_MODE=uid0|syspath|protname|garbled|noident|reuse:N
+REAL=/bin/ps
+FIX=${MPM_FIX:?MPM_FIX not set}
+STATE=${MPM_FAKE_STATE:-/nonexistent}
+
+fmt=""; pids=""; listing=0
+for a in "$@"; do case $a in -A*|-a*x*|-*A*o) listing=1 ;; esac; done
+set -- "$@"
+argv=("$@")
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o) fmt="$fmt${fmt:+,}$2"; shift ;;
+    -p) pids=$2; shift ;;
+    -Axo|-Ao) fmt="$fmt${fmt:+,}$2"; shift ;;
+  esac
+  shift
+done
+
+if [ "$listing" = 1 ] && [ -z "$pids" ]; then
+  [ "${MPM_REAL_PS:-0}" = 1 ] && exec "$REAL" "${argv[@]}"
+  # $MPM_FAKE_STATE/ps.txt overrides the fixture table (e.g. an app closed, or a test process added).
+  t="$FIX/ps.txt"; [ -f "$STATE/ps.txt" ] && t="$STATE/ps.txt"
+  sed "s/@UID@/$(id -u)/" "$t"
+  exit 0
+fi
+
+# Fake PIDs (the fixture table, plus any listed in $MPM_FAKE_STATE/fake_pids) are answered from
+# fixtures/ps_detail.tsv and never looked up in the real system; only the remaining (real,
+# throw-away test) PIDs go to the real ps.
+if [ -n "$pids" ] && [ "${MPM_REAL_PS:-0}" != 1 ]; then
+  fake=" $(awk '{ print $1 }' "$FIX/ps.txt" | tr '\n' ' ')$(tr '\n,' '  ' 2>/dev/null < "$STATE/fake_pids") "
+  real=""; printed=0
+  for p in ${pids//,/ }; do
+    case $fake in
+      *" $p "*)
+        awk -F'\t' -v p="$p" -v fmt="$fmt" '$1 == p {
+          n = split(fmt, f, ","); out = ""
+          for (i = 1; i <= n; i++) { k = f[i]; sub(/=.*/, "", k)
+            if (k == "pid") v = sprintf("%5s", $1); else if (k == "etime") v = sprintf("%11s", $2); else if (k == "args") v = $3
+            else exit 1
+            out = out (i > 1 ? " " : "") v }
+          print out; found = 1 } END { exit !found }' "$FIX/ps_detail.tsv" && printed=1 ;;
+      *) real="$real${real:+,}$p" ;;
+    esac
+  done
+  if [ -z "$real" ]; then [ "$printed" = 1 ] && exit 0; exit 1; fi
+  new=(); skip=0
+  for a in "${argv[@]}"; do
+    if [ "$skip" = 1 ]; then new+=("$real"); skip=0; continue; fi
+    new+=("$a"); [ "$a" = -p ] && skip=1
+  done
+  argv=("${new[@]}"); pids=$real
+fi
+
+# Fault injection on a single disposable process.
+if [ -n "${MPM_FAKE_PS_PID:-}" ] && [ "$pids" = "$MPM_FAKE_PS_PID" ]; then
+  mode=${MPM_FAKE_PS_MODE:-}
+  case $fmt in
+    uid=,ppid=,rss=,%cpu=,etime=,comm=)
+      out=$("$REAL" "${argv[@]}") || exit 1
+      case $mode in
+        uid0)     printf '%s\n' "$out" | awk '{ sub(/^[ \t]*[0-9]+/, "    0"); print }' ;;
+        syspath)  printf '%s\n' "$out" | awk '{ printf "%5s %5s %6s %5s %s %s\n", $1, $2, $3, $4, $5, "/System/Library/CoreServices/FakeAgent.app/Contents/MacOS/FakeAgent" }' ;;
+        protname) printf '%s\n' "$out" | awk '{ printf "%5s %5s %6s %5s %s %s\n", $1, $2, $3, $4, $5, "/opt/fake/WindowServer" }' ;;
+        garbled)  printf '%s\n' "$out" | awk '{ printf "%5s %5s %6s %5s %s %s\n", $1, $2, $3, "0,0", $5, "/System/Library/CoreServices/FakeAgent.app/Contents/MacOS/FakeAgent" }' ;;
+        *)        printf '%s\n' "$out" ;;
+      esac
+      exit 0 ;;
+    lstart=,comm=)
+      case $mode in
+        noident) exit 0 ;;
+        reuse:*)
+          n=$(cat "$STATE/ps_ident_count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STATE/ps_ident_count"
+          out=$("$REAL" "${argv[@]}") || exit 1
+          if [ "$n" -gt "${mode#reuse:}" ]; then printf '%s\n' "$out" | sed 's/[0-9][0-9][0-9][0-9]/2099/'; else printf '%s\n' "$out"; fi
+          exit 0 ;;
+      esac ;;
+  esac
+fi
+
+exec "$REAL" "${argv[@]}"

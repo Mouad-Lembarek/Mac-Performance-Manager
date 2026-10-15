@@ -1,0 +1,7 @@
+1003	02:10:00	/Applications/Cursor.app/Contents/Frameworks/Cursor Helper.app/Contents/MacOS/Cursor Helper --type=utility --utility-sub-type=node.mojom.NodeService ptyHost
+1004	02:10:00	/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin) --type=utility extensionHost --session-token=abcdef
+1005	01:00:00	/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin) --type=utility extensionHost
+1100	01:59:00	/opt/homebrew/bin/node /Applications/Cursor.app/Contents/Resources/app/tsserver.js --token supersecret
+1102	45:12	node server.js --port 3000 --api-key=hunter2
+1500	03:00:00	/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python -m http.server
+1501	1-02:03:04	/Users/me/proj/api/.venv/bin/python3 manage.py runserver 8000 --password hunter2

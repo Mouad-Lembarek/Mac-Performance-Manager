@@ -1,0 +1,22 @@
+#!/bin/bash
+# Test stub for sysctl -n KEY. Unknown keys fail like the real tool.
+[ "${1:-}" = -n ] && shift
+case ${1:-} in
+  hw.model) echo "Mac14,2" ;;
+  machdep.cpu.brand_string) echo "Apple M2" ;;
+  hw.ncpu) echo 8 ;;
+  hw.perflevel0.physicalcpu) echo 4 ;;
+  hw.perflevel1.physicalcpu) echo 4 ;;
+  sysctl.proc_translated) echo 0 ;;
+  hw.memsize) echo 8589934592 ;;
+  hw.pagesize) echo 16384 ;;
+  # $MPM_FAKE_STATE/pressure ("LEVEL FREE_PCT") lets a test change pressure while a session runs.
+  kern.memorystatus_vm_pressure_level) [ "${MPM_FAKE_NO_PRESSURE:-0}" = 1 ] && exit 1
+    if [ -f "$MPM_FAKE_STATE/pressure" ]; then awk '{ print $1; exit }' "$MPM_FAKE_STATE/pressure"; else echo 1; fi ;;
+  kern.memorystatus_level) [ "${MPM_FAKE_NO_PRESSURE:-0}" = 1 ] && exit 1
+    if [ -f "$MPM_FAKE_STATE/pressure" ]; then awk '{ print $2; exit }' "$MPM_FAKE_STATE/pressure"; else echo 45; fi ;;
+  vm.swapusage) cat "$MPM_FIX/swapusage.txt" ;;
+  kern.boottime) echo "{ sec = $(( $(date +%s) - 273600 )), usec = 0 } Mon Oct 12 00:00:00 2026" ;;
+  vm.loadavg) echo "{ 2.10 2.50 2.40 }" ;;
+  *) echo "sysctl: unknown oid '${1:-}'" >&2; exit 1 ;;
+esac

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Test stub: never talks to Finder or Notification Center. Calls are recorded and fail,
+# so the script falls back to moving items into the test HOME's .Trash.
+echo "$*" >> "$MPM_FAKE_STATE/osascript.calls"
+exit 1

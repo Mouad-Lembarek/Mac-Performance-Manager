@@ -1,0 +1,3 @@
+#!/bin/sh
+# $MPM_FAKE_STATE/df.txt overrides the fixture (e.g. low free space).
+if [ -f "$MPM_FAKE_STATE/df.txt" ]; then cat "$MPM_FAKE_STATE/df.txt"; else cat "$MPM_FIX/df.txt"; fi

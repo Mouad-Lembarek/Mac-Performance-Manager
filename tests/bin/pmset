@@ -1,0 +1,3 @@
+#!/bin/sh
+[ "$*" = "-g batt" ] || exit 1
+cat "$MPM_FIX/pmset.txt"

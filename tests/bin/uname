@@ -1,0 +1,7 @@
+#!/bin/sh
+# Test stub for uname (MPM_FAKE_OS simulates another OS).
+case ${1:-} in
+  -s) echo "${MPM_FAKE_OS:-Darwin}" ;;
+  -m) echo arm64 ;;
+  *) exec /usr/bin/uname "$@" ;;
+esac

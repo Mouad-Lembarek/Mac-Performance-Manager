@@ -1,0 +1,10 @@
+# Personal settings (copy from config.env.example)
+config.env
+
+# Generated locally by the tool
+logs/
+reports/
+state/
+
+# macOS
+.DS_Store

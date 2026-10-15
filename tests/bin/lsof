@@ -1,0 +1,30 @@
+#!/bin/bash
+# Test stub for lsof.
+#   lsof -nP -iTCP -sTCP:LISTEN -Fpcn          -> fixtures/lsof_listen.txt (all listeners)
+#   lsof -a -p PID -d cwd -Fn                  -> $MPM_FAKE_STATE/cwd.tsv, else fixtures/lsof_cwd.tsv
+#   lsof -nP -a -p PIDS -iTCP -sTCP:STATE -Fn  -> $MPM_FAKE_STATE/tcp.tsv (pid \t port \t STATE)
+#   lsof -nP -iTCP:PORT -sTCP:LISTEN -Fp       -> $MPM_FAKE_STATE/tcp.tsv
+TCP="$MPM_FAKE_STATE/tcp.tsv"
+pids=""; state=""; port=""; cwd=0; itcp=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    -p) pids=$2; shift ;;
+    -d) [ "$2" = cwd ] && cwd=1; shift ;;
+    -sTCP:*) state=${1#-sTCP:} ;;
+    -iTCP:*) port=${1#-iTCP:}; itcp=1 ;;
+    -iTCP) itcp=1 ;;
+  esac
+  shift
+done
+if [ "$cwd" = 1 ]; then
+  for f in "$MPM_FAKE_STATE/cwd.tsv" "$MPM_FIX/lsof_cwd.tsv"; do
+    [ -f "$f" ] && awk -F'\t' -v p="$pids" '$1 == p { printf "p%s\nfcwd\nn%s\n", $1, $2; f = 1 } END { exit !f }' "$f" && exit 0
+  done
+  exit 1
+fi
+[ "$itcp" = 1 ] || exit 1
+if [ -z "$pids" ] && [ -z "$port" ]; then cat "$MPM_FIX/lsof_listen.txt"; exit 0; fi
+[ -f "$TCP" ] || exit 1
+awk -F'\t' -v pids=",$pids," -v port="$port" -v st="$state" '
+  (port == "" || $2 == port) && (st == "" || $3 == st) && (pids == ",," || index(pids, "," $1 ",")) { printf "p%s\nn*:%s\n", $1, $2; f = 1 }
+  END { exit !f }' "$TCP"
