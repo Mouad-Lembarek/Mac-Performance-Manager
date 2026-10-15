@@ -1,0 +1,24 @@
+Processes: 512 total, 3 running, 509 sleeping, 2345 threads
+2026/10/14 10:00:00
+Load Avg: 2.10, 2.50, 2.40
+CPU usage: 50.00% user, 20.00% sys, 30.00% idle
+SharedLibs: 500M resident, 90M data, 40M linkedit.
+
+PID    %CPU MEM
+1004   0.0  1100M
+1001   0.0  800M
+Processes: 512 total, 2 running, 510 sleeping, 2340 threads
+2026/10/14 10:00:01
+Load Avg: 2.10, 2.50, 2.40
+CPU usage: 21.50% user, 8.50% sys, 70.00% idle
+SharedLibs: 500M resident, 90M data, 40M linkedit.
+
+PID    %CPU MEM
+1004   92.1 1126.4M+
+1001   12.0 820M
+42     0.0  512K
+0      10.2 0B
+150    4.0  N/A
+1600   3.0  1.50G
+1100   3.5  900M
+1201   5.0  400M-

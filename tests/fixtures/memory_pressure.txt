@@ -1,0 +1,9 @@
+The system has 8589934592 (524288 pages with a page size of 16384).
+
+Stats:
+Pages free: 10240
+Pages purgeable: 2000
+Swapins: 3456789
+Swapouts: 4567890
+
+System-wide memory free percentage: 18%

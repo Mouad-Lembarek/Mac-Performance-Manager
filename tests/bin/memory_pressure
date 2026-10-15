@@ -1,0 +1,4 @@
+#!/bin/sh
+# Read-only report only. Any argument (-l, -p, -S: simulation) is recorded as a violation.
+if [ $# -gt 0 ]; then touch "$MPM_FAKE_STATE/forbidden"; echo "memory_pressure stub: arguments are forbidden" >&2; exit 1; fi
+cat "$MPM_FIX/memory_pressure.txt"

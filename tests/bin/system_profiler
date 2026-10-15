@@ -1,0 +1,2 @@
+#!/bin/sh
+cat "$MPM_FIX/system_profiler.txt"

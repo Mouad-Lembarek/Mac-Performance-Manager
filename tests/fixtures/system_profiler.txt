@@ -1,0 +1,9 @@
+Hardware:
+
+    Hardware Overview:
+
+      Model Name: MacBook Air
+      Model Identifier: Mac14,2
+      Chip: Apple M2
+      Memory: 8 GB
+      Serial Number (system): SECRETSERIAL

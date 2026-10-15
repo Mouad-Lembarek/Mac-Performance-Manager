@@ -1,0 +1,2 @@
+#!/bin/sh
+case ${1:-} in -productVersion) echo 15.1 ;; -buildVersion) echo 24B83 ;; *) printf 'ProductName:\tmacOS\nProductVersion:\t15.1\nBuildVersion:\t24B83\n' ;; esac

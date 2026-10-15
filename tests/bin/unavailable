@@ -1,0 +1,4 @@
+#!/bin/sh
+# Copied under a tool's name to simulate a tool that is missing or unusable.
+echo "${0##*/}: not available (test stub)" >&2
+exit 127
