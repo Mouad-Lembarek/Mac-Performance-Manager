@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint:
+    name: Bash syntax check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check bash syntax
+        run: bash -n mac-performance-manager.sh
+
+      - name: Check test suite syntax
+        run: bash -n tests/run_tests.sh
+
+  test:
+    name: Test suite (macOS)
+    runs-on: macos-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          sw_vers
+          bash --version | head -1
+          awk --version 2>/dev/null | head -1 || echo "awk: $(awk -W version 2>&1 | head -1)"
+
+      - name: Run tests
+        run: |
+          chmod +x mac-performance-manager.sh tests/run_tests.sh
+          ./tests/run_tests.sh
