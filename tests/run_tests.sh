@@ -889,6 +889,90 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+echo "[data folder]"
+printf 'NOTIFICATIONS_ENABLED=false\nCOLOR=never\n' > "$TMP/nodata.env"
+FALLBACK="$HOME/Library/Application Support/mac-performance-manager"
+RW="$TMP/rw"; mkdir -p "$RW"; cp "$SCRIPT" "$RW/mpm.sh"
+out=$(PATH="$STUBS:$PATH" "$SH" "$RW/mpm.sh" --report --config "$TMP/nodata.env" 2>&1); rc=$?
+check "writable script folder: data stays next to the script (default unchanged)" '[ $rc = 0 ] && ls "$RW"/reports/report-*.txt >/dev/null 2>&1 && [ ! -e "$FALLBACK" ]' "$out"
+if [ "$(id -u)" = 0 ]; then
+  skip "read-only script folder" "running as root, every folder is writable"
+else
+  RO="$TMP/ro"; mkdir -p "$RO"; cp "$SCRIPT" "$RO/mpm.sh"; chmod 555 "$RO"
+  out=$(PATH="$STUBS:$PATH" "$SH" "$RO/mpm.sh" --report --config "$TMP/nodata.env" 2>&1); rc=$?
+  check "read-only script folder: data goes to ~/Library/Application Support, no warning" '[ $rc = 0 ] && ls "$FALLBACK"/reports/report-*.txt >/dev/null 2>&1 && [ -d "$FALLBACK/state" ] && ! contains "$out" "cannot write" && [ "$(ls -A "$RO")" = mpm.sh ]' "$out"
+  printf 'DATA_DIR=%s\nNOTIFICATIONS_ENABLED=false\nCOLOR=never\n' "$RO/data" > "$TMP/rodata.env"
+  out=$(PATH="$STUBS:$PATH" "$SH" "$RO/mpm.sh" --once --config "$TMP/rodata.env" 2>&1); rc=$?
+  check "DATA_DIR set but not writable: warned, never silently replaced" '[ $rc = 0 ] && contains "$out" "cannot write to $RO/data"' "$out"
+  chmod 755 "$RO"
+fi
+
+# ---------------------------------------------------------------------------
+echo "[install]"
+INST="$ROOT/install.sh"
+L="$HOME/.local/bin/mpm"; SHARE="$HOME/.local/share/mac-performance-manager"
+SYSPATH="/usr/bin:/bin:/usr/sbin:/sbin"
+check "installer syntax (bash -n)" '"$SH" -n "$INST"'
+out=$(grep -nE '(^|[;&|[:space:]])sudo[[:space:]]|rm -rf|zshrc|bash_profile|\.profile' "$INST" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'say ')
+check "installer: no sudo, no rm -rf, never writes a shell profile" '[ -z "$out" ]' "$out"
+
+out=$(PATH="$SYSPATH" "$SH" "$INST" 2>&1); rc=$?
+check "clone install: mpm links to the clone and runs" '[ $rc = 0 ] && [ "$(readlink "$L")" = "$SCRIPT" ] && "$L" --version | grep -q "mac-performance-manager 1." && contains "$out" "Installed: mac-performance-manager"' "$out"
+check "clone install: PATH hint printed, shell profile untouched" 'contains "$out" "is not in your PATH yet" && contains "$out" "export PATH=\"\$HOME/.local/bin:\$PATH\"" && [ ! -e "$HOME/.zshrc" ]' "$out"
+out=$(PATH="$HOME/.local/bin:$SYSPATH" "$SH" "$INST" 2>&1); rc=$?
+check "re-running the installer is harmless; no PATH hint once on PATH" '[ $rc = 0 ] && [ "$(readlink "$L")" = "$SCRIPT" ] && ! contains "$out" "not in your PATH"' "$out"
+
+rm -f "$L"; printf '#!/bin/sh\necho other\n' > "$L"; chmod +x "$L"
+out=$(PATH="$SYSPATH" "$SH" "$INST" 2>&1); rc=$?
+check "an unrelated ~/.local/bin/mpm is never replaced" '[ $rc = 1 ] && [ ! -L "$L" ] && grep -q "echo other" "$L" && contains "$out" "left alone"' "$out"
+out=$(PATH="$SYSPATH" "$SH" "$INST" --uninstall 2>&1); rc=$?
+check "uninstall leaves an unrelated mpm alone" '[ $rc = 0 ] && grep -q "echo other" "$L" && contains "$out" "not Mac Performance Manager"' "$out"
+rm -f "$L"
+
+# One-command install: the installer is piped into bash and downloads from MPM_INSTALL_URL
+# (a local file:// copy here; the tests never use the network).
+RAW="$TMP/raw"; mkdir -p "$RAW"; cp "$SCRIPT" "$ROOT/config.env.example" "$RAW/"
+out=$(cd "$TMP" && MPM_INSTALL_URL="file://$RAW" PATH="$SYSPATH" "$SH" < "$INST" 2>&1); rc=$?
+check "one-command install (piped): script downloaded, linked, runs" '[ $rc = 0 ] && [ "$(readlink "$L")" = "$SHARE/mac-performance-manager.sh" ] && [ -x "$SHARE/mac-performance-manager.sh" ] && [ -f "$SHARE/config.env.example" ] && "$L" --version | grep -q "mac-performance-manager 1."' "$out"
+perms=$(ls -ld "$SHARE" | cut -c1-10)
+check "install folder is private (drwx------)" '[ "$perms" = drwx------ ]' "$perms"
+PATH="$STUBS:$PATH" "$L" --once --no-color > /dev/null 2>&1
+check "downloaded install keeps its data in its own folder" '[ -d "$SHARE/state" ] && [ -d "$SHARE/logs" ]'
+sum0=$(cksum < "$SHARE/mac-performance-manager.sh")
+BAD="$TMP/rawbad"; mkdir -p "$BAD"; echo '<html>404 Not Found</html>' > "$BAD/mac-performance-manager.sh"
+out=$(MPM_INSTALL_URL="file://$BAD" PATH="$SYSPATH" "$SH" < "$INST" 2>&1); rc=$?
+check "invalid download rejected; installed copy unchanged" '[ $rc = 1 ] && contains "$out" "not a valid" && [ "$(cksum < "$SHARE/mac-performance-manager.sh")" = "$sum0" ] && ! ls -A "$SHARE" | grep -q download' "$out"
+out=$(MPM_INSTALL_URL="file://$TMP/nowhere" PATH="$SYSPATH" "$SH" < "$INST" 2>&1); rc=$?
+check "failed download changes nothing" '[ $rc = 1 ] && contains "$out" "download failed" && [ "$(cksum < "$SHARE/mac-performance-manager.sh")" = "$sum0" ] && [ "$(readlink "$L")" = "$SHARE/mac-performance-manager.sh" ]' "$out"
+
+printf 'NOTIFICATIONS_ENABLED=false\nCOLOR=never\n' > "$SHARE/config.env"
+PATH="$STUBS:$PATH" "$L" --work > "$TMP/inst-work.out" 2>&1 < /dev/null &
+IW=$!; CHILDREN="$CHILDREN $IW"
+i=0; while [ "$i" -lt 50 ] && [ ! -s "$SHARE/state/work.pid" ]; do sleep 0.1; i=$((i + 1)); done
+out=$(PATH="$SYSPATH" "$SH" "$INST" --uninstall 2>&1); rc=$?
+check "uninstall refuses while a work mode runs from the install folder" '[ $rc = 1 ] && contains "$out" "mpm --stop" && [ -L "$L" ] && [ -f "$SHARE/mac-performance-manager.sh" ]' "$out"
+PATH="$STUBS:$PATH" "$L" --stop < /dev/null > /dev/null 2>&1
+i=0; while [ "$i" -lt 50 ] && kill -0 "$IW" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+out=$(PATH="$SYSPATH" "$SH" -s -- --uninstall < "$INST" 2>&1); rc=$?
+gone=$(ls "$HOME/.Trash" | grep '^mac-performance-manager-removed-' | head -n 1)
+check "uninstall: command removed, install folder moved to the Trash (recoverable)" '[ $rc = 0 ] && [ ! -L "$L" ] && [ ! -e "$SHARE" ] && [ -n "$gone" ] && [ -f "$HOME/.Trash/$gone/mac-performance-manager.sh" ] && [ -d "$HOME/.Trash/$gone/state" ]' "$out"
+PATH="$SYSPATH" "$SH" "$INST" > /dev/null 2>&1
+out=$(PATH="$SYSPATH" "$SH" "$INST" --uninstall 2>&1); rc=$?
+check "uninstall of a clone install: link removed, clone untouched" '[ $rc = 0 ] && [ ! -L "$L" ] && [ -f "$SCRIPT" ] && [ -f "$INST" ] && contains "$out" "was not touched"' "$out"
+# Printed commands must work when pasted, even from a clone whose path has spaces and quotes.
+ODD="$HOME/My Clone's \"copy\""; mkdir -p "$ODD"; cp "$INST" "$SCRIPT" "$ROOT/config.env.example" "$ODD/"
+out=$(PATH="$SYSPATH" "$SH" "$ODD/install.sh" 2>&1); rc=$?
+cmd=$(printf '%s\n' "$out" | sed -n 's/^  settings  optional:  //p')
+(cd "$TMP" && eval "$cmd") > /dev/null 2>&1
+check "printed settings command works when pasted (path with spaces and quotes)" '[ $rc = 0 ] && [ -n "$cmd" ] && [ -f "$ODD/config.env" ] && [ "$(readlink "$L")" = "$ODD/mac-performance-manager.sh" ]' "$out"
+pathcmd=$(printf '%s\n' "$out" | sed -n "s/^  echo '\(export PATH=.*\)' >> .*/\1/p")
+got=$(PATH="$SYSPATH" "$SH" -c "$pathcmd"' && printf "%s" "${PATH%%:*}"')
+check "printed PATH line adds ~/.local/bin" '[ "$got" = "$HOME/.local/bin" ]' "cmd: $pathcmd -> $got"
+PATH="$SYSPATH" "$SH" "$ODD/install.sh" --uninstall > /dev/null 2>&1
+out=$(PATH="$SYSPATH" "$SH" "$INST" --uninstall 2>&1); rc=$?
+check "uninstall when nothing is installed" '[ $rc = 0 ] && contains "$out" "Nothing to remove"' "$out"
+
+# ---------------------------------------------------------------------------
 echo "[compatibility]"
 if command -v original-awk >/dev/null 2>&1; then
   BWK="$TMP/bwk"; mkdir -p "$BWK"; ln -s "$(command -v original-awk)" "$BWK/awk"

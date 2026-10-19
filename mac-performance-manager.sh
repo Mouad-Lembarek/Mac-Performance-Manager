@@ -456,14 +456,25 @@ detect_platform() {
   CURRENT_UID=$(id -u)
 }
 
-init_dirs() {
-  [ -n "$DATA_DIR" ] || DATA_DIR=$SCRIPT_DIR
+use_data_dir() {   # dir -> 0 if logs/, reports/ and state/ exist (or were created) and are writable
+  DATA_DIR=$1
   LOG_DIR="$DATA_DIR/logs"; REPORT_DIR="$DATA_DIR/reports"; STATE_DIR="$DATA_DIR/state"
   EVENT_LOG="$LOG_DIR/events.log"; HISTORY_FILE="$STATE_DIR/history.tsv"; PIDFILE="$STATE_DIR/work.pid"
-  if mkdir -p "$LOG_DIR" "$REPORT_DIR" "$STATE_DIR" 2>/dev/null && [ -w "$STATE_DIR" ]; then
+  mkdir -p "$LOG_DIR" "$REPORT_DIR" "$STATE_DIR" 2>/dev/null && [ -w "$STATE_DIR" ] && [ -w "$LOG_DIR" ] && [ -w "$REPORT_DIR" ]
+}
+
+init_dirs() {
+  DIRS_OK=0
+  if [ -n "$DATA_DIR" ]; then
+    use_data_dir "$DATA_DIR" && DIRS_OK=1   # set in config: used as is, never replaced
+  elif use_data_dir "$SCRIPT_DIR"; then
     DIRS_OK=1
   else
-    DIRS_OK=0; LOGGING_ENABLED=false; HISTORY_ENABLED=false
+    # Script folder not writable (e.g. installed system-wide): keep the data in a per-user folder.
+    use_data_dir "$HOME/Library/Application Support/mac-performance-manager" && DIRS_OK=1
+  fi
+  if [ "$DIRS_OK" != 1 ]; then
+    LOGGING_ENABLED=false; HISTORY_ENABLED=false
     warn "cannot write to $DATA_DIR; logging, history and reports are disabled."
   fi
 }
