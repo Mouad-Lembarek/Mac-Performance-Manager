@@ -15,8 +15,11 @@ less at once. This tool tells you, with measurements, *what* to close.
 - One Bash script, macOS built-in tools only (`vm_stat`, `sysctl`, `ps`, `top`, `df`,
   `pmset`, `lsof`). No Homebrew, Python or npm packages.
 - No sudo, no network access, no telemetry, no background daemon.
-- Never kills, quits or deletes anything without a typed confirmation, and never
-  deletes permanently (cleanup moves folders to the Trash).
+- Never kills, quits or deletes anything of yours without a typed confirmation, and never
+  deletes permanently (cleanup moves folders to the Trash). The one exception is opt-in and
+  off by default: in a work session, the `AUTO_STOP_IDLE_*` rules can stop an idle TypeScript
+  server or dev server (SIGTERM only, announced first, `x` cancels). See
+  [Work mode](#work-mode-work-session).
 - Runs on the `/bin/bash` 3.2 that ships with macOS.
 
 ---
@@ -251,7 +254,8 @@ app (System Settings > Privacy & Security > Automation).
 **What this tool deliberately does not do**, because these are placebo or harmful:
 `sudo purge`, clearing caches wholesale, changing swap/VM settings, disabling Spotlight,
 SIP, Gatekeeper, sleep or system services, renicing processes, deleting Docker volumes or
-project dependencies, killing processes automatically, restarting anything. If a restart
+project dependencies, killing processes automatically (the only exception is the opt-in,
+off-by-default idle-server rules of [work mode](#work-mode-work-session)), restarting anything. If a restart
 would help (large swap plus persistent slowness), it is *recommended*, never performed.
 
 ---
@@ -362,7 +366,8 @@ running after it stops. Only one session can run at a time (pidfile in `state/`)
 Stopping a process always goes through the same review as menu 10: full details, typed
 `yes`, identity and PID-reuse checks immediately before the signal, SIGTERM first, and
 SIGKILL only if you type `KILL`. Quitting an app asks it to quit normally, so it can ask you to save.
-Nothing is ever stopped, quit or deleted automatically.
+By default nothing is stopped, quit or deleted automatically; the only exceptions are the
+opt-in `AUTO_*` rules described above, each off unless you enable it.
 
 **When it stops** (q, Ctrl+C, `--stop`, or the window closing) it prints and saves
 `reports/report-session-*.txt` (process names only, no command lines or paths). The report covers:
