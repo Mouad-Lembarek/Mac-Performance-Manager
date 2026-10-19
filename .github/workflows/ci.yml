@@ -19,6 +19,9 @@ jobs:
       - name: Check test suite syntax
         run: bash -n tests/run_tests.sh
 
+      - name: Check installer syntax
+        run: bash -n install.sh
+
   test:
     name: Test suite (macOS)
     runs-on: macos-latest

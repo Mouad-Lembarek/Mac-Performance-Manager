@@ -26,25 +26,51 @@ less at once. This tool tells you, with measurements, *what* to close.
 
 ## Installation
 
+**One command** (no clone, no sudo, no Homebrew):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mouad-Lembarek/Mac-Performance-Manager/master/install.sh | bash
+```
+
+This downloads the script to `~/.local/share/mac-performance-manager/` and creates the `mpm`
+command in `~/.local/bin`. Prefer to read an installer before running it? Download
+[`install.sh`](install.sh), read it, then run `bash install.sh`. It never uses sudo and never
+edits your shell profile: if `~/.local/bin` is not in your `PATH`, it prints the one line to add.
+
+**From a clone** (read everything first, update with `git pull`):
+
 ```bash
 git clone https://github.com/Mouad-Lembarek/Mac-Performance-Manager.git
 cd Mac-Performance-Manager
-chmod +x mac-performance-manager.sh
-./mac-performance-manager.sh
+./install.sh                     # optional: adds the mpm command
+./mac-performance-manager.sh     # or run it directly, without installing
 ```
 
-Optional, to customise thresholds:
+Then:
 
 ```bash
-cp config.env.example config.env
-./mac-performance-manager.sh --check-config     # shows effective values and any problems
+mpm --once     # one overview
+mpm            # menu
+mpm --work     # all-day monitor in a terminal tab
 ```
 
-Optional, to run it from anywhere:
+**Update:** run the same `curl ... | bash` command again, or `git pull` in your clone.
+`mpm --version` shows the installed version.
+
+**Uninstall:** `./install.sh --uninstall` (from a clone), or
 
 ```bash
-mkdir -p ~/bin && ln -s "$PWD/mac-performance-manager.sh" ~/bin/mpm
-# add ~/bin to PATH in ~/.zshrc if it is not there:  export PATH="$HOME/bin:$PATH"
+curl -fsSL https://raw.githubusercontent.com/Mouad-Lembarek/Mac-Performance-Manager/master/install.sh | bash -s -- --uninstall
+```
+
+It removes the `mpm` command and moves `~/.local/share/mac-performance-manager/` (script,
+settings, logs, reports) to the Trash. A clone is never touched; delete its folder yourself.
+
+**Settings** (optional): copy `config.env.example` to `config.env` next to the script (in
+your clone, or in `~/.local/share/mac-performance-manager/`), edit it, then check it:
+
+```bash
+mpm --check-config     # shows effective values and any problems; exits 1 if there are errors
 ```
 
 The first run calls `system_profiler` once (about 1 second) to learn the model name
@@ -53,6 +79,8 @@ The first run calls `system_profiler` once (about 1 second) to learn the model n
 ---
 
 ## Usage
+
+After installing, `mpm` works in place of `./mac-performance-manager.sh` everywhere below.
 
 | Command | What it does |
 |---|---|
@@ -423,7 +451,8 @@ Most useful knobs:
 ## Files and privacy
 
 Everything stays on your Mac, in the script folder (or `DATA_DIR`), created with
-permissions `600`/`700`:
+permissions `600`/`700`. If the script folder is not writable (for example a system-wide
+install), the tool uses `~/Library/Application Support/mac-performance-manager/` instead:
 
 | Path | Content |
 |---|---|
@@ -443,6 +472,7 @@ written to disk. `.gitignore` excludes all of the above plus your `config.env`.
 
 | Symptom | Cause / fix |
 |---|---|
+| `mpm: command not found` after installing | `~/.local/bin` is not in your `PATH`. Run the `echo 'export PATH=...' >> ~/.zshrc` line the installer printed, or use `~/.local/bin/mpm` |
 | `Permission denied` when starting | Run `chmod +x mac-performance-manager.sh`, or start it with `bash mac-performance-manager.sh` |
 | "this tool supports macOS only" | It reads macOS-specific kernel counters and will not run elsewhere |
 | Pressure shows `unknown` | Your macOS did not expose the sysctl; the tool falls back to `memory_pressure`. If both fail, status is UNKNOWN rather than a guess |
@@ -460,6 +490,7 @@ written to disk. `.gitignore` excludes all of the above plus your `config.env`.
 
 ```
 mac-performance-manager.sh   the tool (the only file needed to use it)
+install.sh                   optional installer: adds/removes the mpm command
 config.env.example           documented settings; copy to config.env to customise
 README.md                    this file
 .gitignore                   excludes config.env, logs/, reports/, state/
@@ -582,10 +613,14 @@ A third fix concerns work mode, not termination:
 
 3. **Work mode started through a symlink** (`pidfile_alive`, `work_mode`): a running work
    mode was recognised only if its command line contained `mac-performance-manager`. When
-   it was started as `mpm --work` through the `~/bin/mpm` symlink suggested above, a second
+   it was started as `mpm --work` through an `mpm` symlink, a second
    `--work` started anyway. `--stop` said "not running" and deleted the live pidfile instead
    of stopping it. The pidfile now also records the start time, and an instance is recognised
    by PID + start time + `--work`. Two tests cover this, and both fail without the fix.
+   Later the same bug was found for work mode started from the menu (item 11), whose command
+   line has no `--work`: the owner is now recognised by PID + start time alone (recorded in
+   UTC, so a time-zone change does not matter), and claiming the pidfile is serialised by an
+   atomic lock so two work modes started at the same moment cannot both run.
 4. **Trash move re-checked after confirmation** (`trash_artifact_flow`): the folder was
    validated at review but not again after `trash` was typed. If it was replaced by a
    symlink in between, Finder could have moved the symlink's target. Now the folder's
