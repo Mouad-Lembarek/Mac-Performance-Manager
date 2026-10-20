@@ -8,6 +8,10 @@ First public release.
 
 ### Added
 
+- **Free up memory** (`mpm --free`, menu item `f`, key `f` in work mode): a ranked plan of the
+  development processes and apps that would free the most memory, with what each step costs.
+  Each chosen step goes through the usual review and confirmation; after each one the plan
+  measures again and shows the effect, and it ends with a before/after summary.
 - One-command install and uninstall (`install.sh`): installs the `mpm` command in
   `~/.local/bin`, from a clone or piped from `curl`. Checks the download before using it,
   never replaces an unrelated `mpm`, never uses sudo or edits your shell profile. Uninstall
@@ -29,6 +33,17 @@ First public release.
 
 ### Fixed
 
+- In work mode, the advice printed with a pressure warning used RSS, which leaves out compressed
+  and swapped-out memory: on a Mac with 8.5 GB in swap it showed Brave at ~1.0 GB instead of
+  ~3.9 GB and left out Cursor. It now measures footprints first. Advice that has to use RSS
+  (live mode) says that real use is higher.
+- The HIGH-pressure message said "nothing is closed automatically" even when an opt-in
+  `AUTO_STOP_IDLE_*` rule was on. It now names the active rules.
+- Processes started by Cursor that rename themselves (extension hosts) or are not a known
+  runtime (`tsserver`) were listed apart from Cursor, so Cursor's total was ~2 GB too low.
+- Pressure reasons name the kernel level ("memory pressure WARNING (kernel level 2)"), so a HIGH
+  status next to a high free estimate is no longer confusing; the work-mode top-consumers
+  view labels its memory, CPU and application tables.
 - A work mode started from the menu (item 11) was not recognised: a second `--work` could start,
   and `--stop` reported "not running" and deleted the live session's pidfile. The owner is now
   identified by PID plus start time (recorded in UTC, so a time-zone change does not matter).

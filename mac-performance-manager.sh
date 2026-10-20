@@ -14,7 +14,7 @@
 #     work session, under sustained pressure, after a notice you can cancel (x).
 #   * Compatible with macOS /bin/bash 3.2 and the BSD userland.
 #
-# Usage: ./mac-performance-manager.sh [--help|--work|--report|--live|--once|--stop]
+# Usage: ./mac-performance-manager.sh [--help|--work|--report|--live|--once|--free|--stop]
 # =============================================================================
 
 # shellcheck disable=SC2088,SC2034,SC2120
@@ -664,12 +664,17 @@ enrich_procs() {
         p = P[i]; mem = rss[p]; src = "R"
         if ((p in tmem) && tmem[p] >= 0) { mem = tmem[p]; src = "F" }
         c = cpu[p]; if (p in tcpu) c = tcpu[p]
-        own = "-"; q = ppid[p]; d = 0
+        own = "-"; owncat = ""; q = ppid[p]; d = 0
         while (q != "" && q + 0 > 1 && d < 64) {
-          if ((q in isapp) && isapp[q] && app[q] != app[p]) { own = app[q]; break }
+          if ((q in isapp) && isapp[q] && app[q] != app[p]) { own = app[q]; owncat = cat[q]; break }
           q = ppid[q]; d++
         }
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p, ppid[p], uid[p], rss[p], c, mem, src, app[p], cat[p], base[p], own, role[p], cpath[p]
+        a = app[p]; k = cat[p]; r = role[p]
+        # Cursor helpers that rename themselves ("Cursor Helper (Plugin): extension-host ...") and the
+        # unclassified tools Cursor starts (tsserver, extension binaries) belong to Cursor: they go
+        # away when its windows close. Known runtimes (Node.js, Python, ...) keep their own group.
+        if (k == "Other" && owncat == "Cursor") { a = own; k = "Cursor"; r = (base[p] ~ /\(Plugin\)/ ? "plugin" : "tool") }
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p, ppid[p], uid[p], rss[p], c, mem, src, a, k, base[p], own, r, cpath[p]
       }
     }'
 }
@@ -895,7 +900,7 @@ evaluate_state() {
   if [ "$swapping" = 1 ]; then SWAPACT_STREAK=$((SWAPACT_STREAK + 1)); else SWAPACT_STREAK=0; fi
   MEM_ELEVATED=$elevated; MEM_CRITICAL=$critical; MEM_SWAPPING=$swapping
 
-  [ "$elevated" = 1 ] && reasons="memory pressure $(pressure_text)${FREE_PCT:+, macOS free estimate $FREE_PCT%}"
+  [ "$elevated" = 1 ] && reasons="memory pressure $(pressure_text)${PRESS_LEVEL:+ (kernel level $PRESS_LEVEL)}${FREE_PCT:+, macOS free estimate $FREE_PCT%}"
   [ "$swapping" = 1 ] && reasons="${reasons:+$reasons; }actively swapping out ($SWAPOUT_RATE pages/s)"
   [ "$SWAP_TREND" = growing ] && reasons="${reasons:+$reasons; }swap $(fmt_mb_signed "$SWAP_DELTA_MB") in ${SWAP_SPAN_MIN}m"
 
@@ -1021,6 +1026,7 @@ build_recommendations() {
     HIGH|CRITICAL|WATCH)
       [ "$VERDICT" = WATCH ] && echo "- Memory is getting tight (not yet sustained). If the Mac feels slow, start with the largest consumers below."
       [ "$VERDICT" != WATCH ] && echo "- Memory is under sustained pressure. Save your work, then reduce load starting with the largest consumers:"
+      [ "$PROC_MEM_SRC" = FOOTPRINT ] || echo "  (sizes are resident memory only: compressed and swapped-out memory is not counted, so real use is higher)"
       any=1
       # Groups above the cutoff; if none reaches it, still name the 3 largest (never an empty list).
       listed=$(group_totals | head -n 8 | awk -F'\t' -v h="$heavy_mb" '
@@ -1786,11 +1792,18 @@ quit_app_flow() {
   line=$(printf '%s\n' "$apps" | awk -v n="$n" 'NR == n')
   [ -n "$line" ] || { warn "no such entry."; return; }
   pid=$(printf '%s' "$line" | cut -f1); name=$(printf '%s' "$line" | cut -f2); bundle=$(printf '%s' "$line" | cut -f3)
-  case " $(self_ancestors) " in *" $pid "*) echo "Refused: $name hosts this manager."; return ;; esac
-  is_protected_name "$bundle" && { echo "Refused: $bundle is critical for your session."; return; }
+  quit_app_do "$pid" "$name" "$bundle"
+}
+
+# Asks one application to quit normally, after the safety checks and a confirmation.
+# Sets QA_ACTION (asked|cancelled|refused|"") and QA_NAME.
+quit_app_do() {   # pid app_name bundle_name
+  local pid=$1 name=$2 bundle=$3
+  QA_ACTION=""; QA_NAME=$bundle
+  case " $(self_ancestors) " in *" $pid "*) echo "Refused: $name hosts this manager."; QA_ACTION=refused; return ;; esac
+  is_protected_name "$bundle" && { echo "Refused: $bundle is critical for your session."; QA_ACTION=refused; return; }
   [ "$name" = Cursor ] && echo "  Note: quitting Cursor stops its AI agents and terminals; Cursor will ask about unsaved files."
   ask "Ask '$bundle' to quit normally (it can prompt you to save)? [y/N] " || return
-  QA_NAME=$bundle
   case $REPLY_VAL in y|Y|yes) ;; *) echo "Cancelled."; QA_ACTION=cancelled; return ;; esac
   if [ "$HAVE_OSASCRIPT" = 1 ] && [ "$OS_NAME" = Darwin ]; then
     if run_with_timeout 30 osascript -e 'on run argv' -e 'tell application (item 1 of argv) to quit' -e 'end run' "$bundle" >/dev/null 2>&1; then
@@ -1894,6 +1907,132 @@ cleanup_menu() {
       *) echo "Unknown choice." ;;
     esac
   done
+}
+
+# =============================================================================
+# Free up memory: a ranked plan of what would free the most. Each step goes through the
+# same review and confirmation as menu 10; nothing is batched and nothing runs unasked.
+# =============================================================================
+plan_measure() {   # fresh footprints; inside a work session, without touching its streaks
+  if [ "$WORK_ACTIVE" = 1 ]; then
+    collect_memory; collect_pressure; collect_swap
+    S_PRECISE_TS=0; session_fresh_precise
+  else
+    info "Measuring per-process memory (about 2 s)..."
+    snapshot_once precise
+  fi
+}
+
+# kind \t mem_kb \t pid \t name \t bundle \t cpu   (largest first, at most 10)
+#   proc: a development process (stopped via terminate_flow)
+#   app:  a regular application (asked to quit via quit_app_do)
+#   tabs: a browser (read-only advice: the manager cannot see or close tabs)
+plan_items() {
+  local self pid app bundle kb kind cpu
+  self=" $(self_ancestors) "
+  {
+    dev_rows | awk -F'\t' '{ printf "proc\t%s\t%s\t%s\t-\t%s\n", $2, $1, $4, $3 }'
+    list_gui_apps | while IFS="$TAB" read -r pid app bundle kb; do
+      [ -n "$pid" ] || continue
+      case $self in *" $pid "*) continue ;; esac   # the terminal running this manager
+      [ "$kb" -ge $((APP_CANDIDATE_MIN_MB * 1024)) ] || continue
+      case $app in Brave|Chrome|Arc|Firefox|Safari|"Microsoft Edge"|Vivaldi|Opera) kind=tabs ;; *) kind=app ;; esac
+      cpu=$(group_totals | awk -F'\t' -v a="$app" '$1 == a { print $6; exit }')
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$kb" "$pid" "$app" "$bundle" "${cpu:-0}"
+    done
+  } | sort -t "$TAB" -k2,2nr | head -n 10
+}
+
+plan_app_effect() {   # app cpu -> what quitting it costs
+  local idle=""
+  awk -v c="$2" 'BEGIN { exit !(c + 0 < 5) }' && idle=" Idle right now (${2}% CPU)."
+  case $1 in
+    Cursor) echo "Stops its AI agents and terminals; it asks about unsaved files.$idle" ;;
+    Docker) echo "Running containers stop.$idle" ;;
+    *) echo "Closes its windows; it can ask you to save first. Reopen it when you need it.$idle" ;;
+  esac
+}
+
+plan_record() {   # proc|app name pid -> session notes (work mode); 0 if something was done
+  case $1 in
+    proc)
+      case $T_ACTION in
+        sigterm|sigkill) [ "$WORK_ACTIVE" = 1 ] && { session_note USER "approved (free-up plan): stopped $2 (PID $3, $T_ACTION)"; session_watch_effect "stop $2"; }; return 0 ;;
+        left) [ "$WORK_ACTIVE" = 1 ] && session_note USER "approved SIGTERM for $2 (PID $3); it kept running and you declined SIGKILL" ;;
+        cancelled) [ "$WORK_ACTIVE" = 1 ] && session_note USER "declined (free-up plan): stopping $2 (PID $3)" ;;
+        refused) [ "$WORK_ACTIVE" = 1 ] && session_note USER "refused by safety checks: $2 (PID $3)" ;;
+      esac ;;
+    app)
+      case $QA_ACTION in
+        asked) [ "$WORK_ACTIVE" = 1 ] && { session_note USER "approved (free-up plan): asked $QA_NAME to quit"; session_watch_effect "quit $QA_NAME"; }; return 0 ;;
+        cancelled) [ "$WORK_ACTIVE" = 1 ] && session_note USER "declined (free-up plan): quitting $QA_NAME" ;;
+      esac ;;
+  esac
+  return 1
+}
+
+free_memory_plan() {
+  local items n line kind kb pid name bundle cpu ports port i what eff f0 u0 s0 fb ub done_list=""
+  plan_measure
+  f0=${FREE_PCT:-?}; u0=$MEM_USED_MB; s0=$SWAP_USED_MB
+  while :; do
+    items=$(plan_items)
+    section "FREE UP MEMORY - ranked plan"
+    printf '  Now: pressure %s, macOS free estimate %s%%, memory used %s, swap %s\n' \
+      "$(pressure_text)" "${FREE_PCT:-?}" "$(fmt_mb "$MEM_USED_MB")" "$(fmt_mb "$SWAP_USED_MB")"
+    if [ -z "$items" ]; then
+      echo "  Nothing large enough to suggest (development processes >= ${DEV_CANDIDATE_MIN_MB} MB, apps >= ${APP_CANDIDATE_MIN_MB} MB)."
+      break
+    fi
+    ports=$(list_listeners 2>/dev/null); i=0
+    while IFS="$TAB" read -r kind kb pid name bundle cpu; do
+      [ -n "$kind" ] || continue
+      i=$((i + 1))
+      case $kind in
+        proc) port=$(printf '%s\n' "$ports" | awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }')
+              what="stop process (PID $pid)"; eff="If stopped: $(dev_impact "$name" "$port")" ;;
+        app)  what="quit app"; eff=$(plan_app_effect "$name" "$cpu") ;;
+        tabs) what="close heavy tabs"; eff="Shows how to find the heaviest tabs (read-only: the manager cannot see or close tabs)." ;;
+      esac
+      printf '  %2d) %-30s ~%-8s %s\n' "$i" "$(printf '%s' "$name" | cut -c1-30)" "$(fmt_mb $((kb / 1024)))" "$what"
+      printf '      %s\n' "$eff"
+    done <<EOF
+$items
+EOF
+    echo "  Sizes are physical footprints and overlap (a process started by an app is also in that app's total)."
+    echo "  Nothing happens until you pick a number, and each step shows its own review and asks again."
+    ask "Number to act on (Enter = done): " || break
+    n=$(trim "$REPLY_VAL")
+    [ -n "$n" ] || break
+    is_uint "$n" || { echo "Not a number. Nothing was done."; continue; }
+    line=$(printf '%s\n' "$items" | awk -v n="$n" 'NR == n')
+    [ -n "$line" ] || { echo "No such entry. Nothing was done."; continue; }
+    IFS="$TAB" read -r kind kb pid name bundle cpu <<EOF
+$line
+EOF
+    fb=${FREE_PCT:-?}; ub=$MEM_USED_MB
+    case $kind in
+      tabs) session_browser; continue ;;
+      proc) terminate_flow "$pid" ;;
+      app) quit_app_do "$pid" "$name" "$bundle" ;;
+    esac
+    plan_record "$kind" "$name" "$pid" || continue
+    done_list="$done_list${done_list:+, }$name"
+    sleep 2
+    plan_measure
+    printf '  Effect so far: macOS free estimate %s%% -> %s%%, memory used %s -> %s (macOS may need a minute to settle).\n' \
+      "$fb" "${FREE_PCT:-?}" "$(fmt_mb "$ub")" "$(fmt_mb "$MEM_USED_MB")"
+  done
+  if [ -n "$done_list" ]; then
+    section "FREE-UP SUMMARY"
+    printf '  Done: %s\n' "$done_list"
+    printf '  Since the plan started: macOS free estimate %s%% -> %s%%, memory used %s -> %s, swap %s -> %s\n' \
+      "$f0" "${FREE_PCT:-?}" "$(fmt_mb "$u0")" "$(fmt_mb "$MEM_USED_MB")" "$(fmt_mb "$s0")" "$(fmt_mb "$SWAP_USED_MB")"
+    note "  Swap shrinks only gradually, as macOS reads data back or frees it."
+    log_event ACTION "free-up plan: $done_list"
+  else
+    echo "Nothing was changed."
+  fi
 }
 
 # =============================================================================
@@ -2019,6 +2158,9 @@ session_fresh_precise() {
   echo "Measuring per-process memory (about 2 s)..."
   collect_procs precise
   S_PRECISE_TS=$(now_epoch); S_PRECISE_N=$((S_PRECISE_N + 1))
+  # The report's "largest groups at the worst moment" should use these footprints, not RSS.
+  [ -n "$FREE_PCT" ] && [ "$FREE_PCT" = "$S_MIN_FREE" ] && S_WORST_GROUPS=$(group_totals | head -n 5)
+  return 0
 }
 
 session_note() {   # AUTO|USER|AFTER text  (bounded, names and PIDs only; also logged)
@@ -2115,8 +2257,15 @@ session_pressure_brief() {
     group_totals | awk -F'\t' '$2 != "System" { printf "  - %s ~%.1f GB (%d processes)\n", $1, $4 / 1048576, $3; if (++n == 4) exit }'
   fi
   local d; d=$(dev_summary); [ -n "$d" ] && echo "Development processes: $d"
-  echo "Options (monitoring continues): d = diagnose and choose an action, k = stop a dev process, t = top consumers."
-  echo "Ignoring this is fine: nothing is closed automatically."
+  echo "Options (monitoring continues): f = free up memory (ranked plan, you approve each step), d = diagnose,"
+  echo "  k = stop a dev process, t = top consumers."
+  if auto_rules_on; then
+    printf 'Ignoring this is fine. Only your opt-in rule(s) may act: %s, after a %ss notice (x cancels). Apps are never quit.\n' \
+      "$( { [ "$AUTO_STOP_IDLE_TSSERVER" = true ] && echo "idle TypeScript servers"; [ "$AUTO_STOP_IDLE_DEVSERVER" = true ] && echo "idle dev servers"; } | paste -sd, - | sed 's/,/ and /')" \
+      "$AUTO_ACTION_GRACE_SEC"
+  else
+    echo "Ignoring this is fine: nothing is closed automatically."
+  fi
 }
 
 session_recovery() {   # now
@@ -2554,7 +2703,8 @@ END_L
 }
 
 session_help() {
-  echo "Keys: s status | t top consumers | d diagnose + choose an action | k stop a dev process | i inspect a PID"
+  echo "Keys: f free up memory (ranked plan) | s status | t top consumers | d diagnose + choose an action"
+  echo "      k stop a dev process | i inspect a PID"
   echo "      c disk cleanup review | a actions this session | r save a report now | n sample now | q stop"
   auto_rules_on && echo "      x cancel a pending automatic action (announced ${AUTO_ACTION_GRACE_SEC}s ahead)"
   [ "$S_INPUT" = pipe ] && echo "      (type the letter and press Enter)"
@@ -2575,8 +2725,9 @@ session_top() {
   session_fresh_precise
   if [ "$S_CACHE_HITS" -gt "$before" ]; then section "TOP CONSUMERS (detailed sample from $(( $(now_epoch) - S_PRECISE_TS ))s ago; reused, no new measurement)"
   else section "TOP CONSUMERS (measured now)"; fi
-  print_proc_table mem 8
-  print_proc_table cpu 5
+  echo "  By memory:"; print_proc_table mem 8
+  echo "  By CPU:"; print_proc_table cpu 5
+  echo "  By application:"
   print_group_table 8
   memory_sum_note
 }
@@ -2814,6 +2965,7 @@ session_command() {   # text
     t|T) session_top ;;
     d|D) session_diagnose ;;
     k|K) session_dev_flow ;;
+    f|F) free_memory_plan ;;
     i|I) session_inspect ;;
     c|C) session_disk ;;
     a|A) session_actions ;;
@@ -2877,6 +3029,8 @@ work_mode() {   # [from_menu]
         session_say "$EVENT_LINES"
         case $EVENT_LINES in *WARN:*)
           if [ $((now - LAST_RECO_TS)) -ge $((NOTIFY_COOLDOWN_MIN * 60)) ] || [ "$LAST_RECO_TS" = 0 ]; then
+            # Advice names apps by size: measure footprints first (RSS misses compressed/swapped memory).
+            session_fresh_precise
             LAST_RECO_TS=$now; S_RECO_PRINTED=1; echo "Recommended:"; build_recommendations | sed 's/^/  /'
           fi ;;
         esac
@@ -2989,6 +3143,7 @@ main_menu() {
     printf '\n%sMac Performance Manager %s%s  |  %s  |  swap %s  |  disk %s free\n' "$C_B" "$MPM_VERSION" "$C_RST" \
       "$(badge "$VERDICT") pressure $(pressure_text)${FREE_PCT:+ ($FREE_PCT% free)}" "$(fmt_mb "$SWAP_USED_MB")" "$(fmt_mb "$DISK_AVAIL_MB")"
     cat <<'EOF'
+   f) Free up memory: a ranked plan of what to close; you approve each step
    1) Live system overview          8) Development process diagnostics
    2) Memory diagnostics            9) Safe cleanup recommendations
    3) CPU diagnostics              10) Interactive process management
@@ -2997,8 +3152,9 @@ main_menu() {
    6) Top CPU-consuming procs      13) Exit
    7) Cursor diagnostics
 EOF
-    ask "Select [1-13]: " || return 0
+    ask "Select [f, 1-13]: " || return 0
     case $(trim "$REPLY_VAL") in
+      f|F) free_memory_plan; pause ;;
       1) live_mode ;;
       2) view_memory; pause ;;
       3) view_cpu; pause ;;
@@ -3028,6 +3184,7 @@ Usage:
   ./mac-performance-manager.sh --work       Work mode: monitor all day, warn on sustained problems
   ./mac-performance-manager.sh --report     Concise report, saved under reports/
   ./mac-performance-manager.sh --once       Print one overview and exit
+  ./mac-performance-manager.sh --free       Free up memory: ranked plan, you approve each step
   ./mac-performance-manager.sh --stop       Stop a running work mode (from another terminal)
   ./mac-performance-manager.sh --check-config   Show effective settings and config warnings
   ./mac-performance-manager.sh --help | --version
@@ -3075,6 +3232,7 @@ main() {
       --report) mode=report ;;
       --live) mode=live ;;
       --once) mode=once ;;
+      --free) mode=free ;;
       --stop) mode=stop ;;
       --check-config) mode=checkconfig ;;
       --no-color) FORCE_NO_COLOR=1 ;;
@@ -3108,6 +3266,7 @@ main() {
     report) report_mode ;;
     live) live_mode ;;
     once) load_model_name; snapshot_once precise; collect_uptime; render_overview ;;
+    free) free_memory_plan ;;
     stop) stop_work_mode ;;
     interactive) load_model_name; main_menu ;;
   esac

@@ -81,6 +81,7 @@ cd Mac-Performance-Manager
 | Command | What it does |
 |---|---|
 | `mpm --once` | One overview: memory, CPU, disk, top processes, recommendations |
+| `mpm --free` | **Free up memory:** a ranked plan of what to close, with what each step costs; you approve each step |
 | `mpm` | Interactive menu: memory, CPU, disk, Cursor and dev-process diagnostics, safe cleanup |
 | `mpm --work` | All-day monitor in a terminal tab. Quiet until a problem is *sustained*; `q` stops it |
 | `mpm --report` | Saved report with recent warnings |
@@ -89,17 +90,22 @@ cd Mac-Performance-Manager
 | `mpm --check-config` | Check your settings (exits 1 if there are errors) |
 
 **A simple routine:** start `mpm --work` in a terminal tab in the morning and forget it. When the
-Mac feels slow, open `mpm` in another tab: **2** tells you whether memory is really the
-problem, **7** and **8** show what Cursor and your dev tools are using, **9** helps you act and
-compares before and after.
+Mac feels slow, press **f** in that tab (or run `mpm --free`): you get a ranked list such as
+"Cursor ~6.3 GB, quit app", "tsserver ~1.5 GB, stop process: Cursor restarts it when needed",
+"Slack ~1.1 GB, idle". Pick a number, review, confirm; it measures again and shows what you
+actually gained.
 
 Settings are optional: copy `config.env.example` to `config.env` next to the script and edit it.
 Every setting is documented in [`config.env.example`](config.env.example).
 
 ## FAQ
 
-**Will it make my Mac faster?** Not by itself. Nothing can add RAM. It shows you, with
-measurements, which windows, tabs and servers to close, and whether closing them helped.
+**Will it make my Mac faster?** It frees memory the only way that really works: by closing
+what you don't need. `mpm --free` ranks what would free the most, tells you what each step
+costs, does the steps you approve (stop a dev process, quit an app), then measures the result.
+It never closes anything on its own guess, because only you know which tab or window you still
+need. "RAM cleaner" tricks such as `sudo purge` only empty caches that macOS refills within
+minutes, so the tool doesn't do them.
 
 **Does it need sudo or send data anywhere?** No. It only reads what macOS shows to your user
 account, and everything stays in local files with private permissions. Command lines and
