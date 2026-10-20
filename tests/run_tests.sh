@@ -85,11 +85,24 @@ out=$(grep -nE 'sed -i|grep -P|sort -h|readlink -f|stat -c|numfmt|gensub|strftim
 check "no GNU-only utilities/options" '[ -z "$out" ]' "$out"
 out=$(grep -nE 'curl|wget|nc |https?://' "$SCRIPT")
 check "no network access" '[ -z "$out" ]' "$out"
+out=$(grep -nE '(echo|printf).*[^0-9.][0-9]+ GB' "$SCRIPT" | grep -vE '^[0-9]+:[[:space:]]*#')
+check "no hard-coded RAM size in user-facing text" '[ -z "$out" ]' "$out"
+out=$(grep -n 'rm -rf' "$SCRIPT" | grep -v 'shell_quote')
+check "printed rm -rf hint quotes its path with shell_quote" '[ -z "$out" ]' "$out"
+out=$(grep -nE 'no automatic kills|Nothing is ever stopped, quit or deleted automatically' "$SCRIPT" "$ROOT"/*.md "$ROOT"/docs/*.md)
+check "no unconditional 'never automatic' claims (opt-in auto-stop exists)" '[ -z "$out" ]' "$out"
+check "header, help, README and guide all disclose the opt-in auto-stop" 'grep -q "AUTO_STOP_IDLE_\*" "$SCRIPT" && grep -q "Sole exception, OFF by default" "$SCRIPT" && grep -q "AUTO_STOP_IDLE_\*" "$ROOT/README.md" && grep -q "AUTO_STOP_IDLE_TSSERVER" "$ROOT/docs/GUIDE.md"'
+# Relative links in the docs point to files that exist (anchors are not checked).
+out=$(for f in "$ROOT"/*.md "$ROOT"/docs/*.md; do
+  grep -oE '\]\([^)#:]+(#[^)]*)?\)' "$f" | sed -E 's/^\]\(//; s/[#)].*$//' | while IFS= read -r l; do
+    [ -e "$(dirname "$f")/$l" ] || echo "${f#"$ROOT"/}: $l"; done; done)
+check "documentation links point to existing files" '[ -z "$out" ]' "$out"
 
 # ---------------------------------------------------------------------------
 echo "[cli]"
 out=$("$SH" "$SCRIPT" --help 2>&1); rc=$?
 check "--help works without macOS tools" '[ $rc = 0 ] && contains "$out" "Usage:" && contains "$out" "--work" && contains "$out" "--report"'
+check "--help discloses the opt-in automatic stops" 'contains "$out" "opt-in AUTO_STOP_IDLE_*" && contains "$out" "off by default" && ! contains "$out" "no automatic kills"' "$out"
 out=$("$SH" "$SCRIPT" --version 2>&1)
 check "--version" 'contains "$out" "mac-performance-manager 1."'
 out=$("$SH" "$SCRIPT" --bogus 2>&1); rc=$?
@@ -99,17 +112,21 @@ check "refuses to run on non-macOS" '[ $rc = 1 ] && contains "$out" "macOS only"
 
 # ---------------------------------------------------------------------------
 echo "[config]"
-out=$("$SH" "$SCRIPT" --check-config --config "$MPM_FIX/config_valid.env" 2>&1)
+out=$("$SH" "$SCRIPT" --check-config --config "$MPM_FIX/config_valid.env" 2>&1); rc=$?
+check "--check-config exits 0 for a valid config" '[ $rc = 0 ]' "rc=$rc"
 check "valid config values applied" 'printf "%s\n" "$out" | grep -q "LIVE_INTERVAL_SEC *5$" && printf "%s\n" "$out" | grep -q "WORK_INTERVAL_SEC *15$" && printf "%s\n" "$out" | grep -q "SUSTAINED_SAMPLES *2$" && printf "%s\n" "$out" | grep -q "DISK_FREE_WARN_GB *30$" && printf "%s\n" "$out" | grep -q "LOGGING_ENABLED *false$"' "$out"
 check "valid config has no warnings" '! contains "$out" "Warnings:"' "$out"
-out=$("$SH" "$SCRIPT" --check-config --config "$TMP/does-not-exist.env" 2>&1)
+out=$("$SH" "$SCRIPT" --check-config --config "$TMP/does-not-exist.env" 2>&1); rc=$?
 check "missing config -> warning + defaults" 'contains "$out" "not found" && printf "%s\n" "$out" | grep -q "LIVE_INTERVAL_SEC *4$"' "$out"
+check "--check-config exits 1 when the given config file is missing" '[ $rc = 1 ]' "rc=$rc"
 # A copy in an empty folder: the user's own config.env next to the real script must not matter.
 mkdir -p "$TMP/noconf"; cp "$SCRIPT" "$TMP/noconf/mpm.sh"
-out=$(cd "$TMP" && "$SH" "$TMP/noconf/mpm.sh" --check-config 2>&1)
+out=$(cd "$TMP" && "$SH" "$TMP/noconf/mpm.sh" --check-config 2>&1); rc=$?
 check "no config.env at all -> silent defaults" 'contains "$out" "using defaults" && ! contains "$out" "Warnings:"' "$out"
+check "--check-config exits 0 with no config.env (defaults are valid)" '[ $rc = 0 ]' "rc=$rc"
 rm -f /tmp/mpm_pwned_test
-out=$("$SH" "$SCRIPT" --check-config --config "$MPM_FIX/config_invalid.env" 2>&1)
+out=$("$SH" "$SCRIPT" --check-config --config "$MPM_FIX/config_invalid.env" 2>&1); rc=$?
+check "--check-config exits 1 when the config has errors (still prints everything)" '[ $rc = 1 ] && contains "$out" "Warnings:" && printf "%s\n" "$out" | grep -q "LIVE_INTERVAL_SEC *4$"' "rc=$rc"
 check "config is parsed, never executed" '[ ! -e /tmp/mpm_pwned_test ]'
 check "invalid integer rejected, default kept" 'contains "$out" "LIVE_INTERVAL_SEC=" && printf "%s\n" "$out" | grep -q "LIVE_INTERVAL_SEC *4$" && printf "%s\n" "$out" | grep -q "WORK_INTERVAL_SEC *30$"' "$out"
 check "out-of-range, bad bool, bad enum, unknown key, garbage line all reported" 'contains "$out" "SUSTAINED_SAMPLES=" && contains "$out" "LOGGING_ENABLED=" && contains "$out" "COLOR=" && contains "$out" "unknown setting" && contains "$out" "expected KEY=VALUE" && contains "$out" "absolute path"' "$out"
@@ -188,6 +205,33 @@ check "history trimmed to HISTORY_MAX_LINES (keeps newest)" '[ "$out" = "100
 out=$(src 'LOGGING_ENABLED=true; LOG_MAX_KB=16; i=0; while [ $i -lt 400 ]; do log_event INFO "line $i padding padding padding"; i=$((i+1)); done; ls "$LOG_DIR"; [ $(wc -c < "$EVENT_LOG") -le 17000 ] && echo SIZE_OK')
 check "event log rotates at LOG_MAX_KB" 'contains "$out" "events.log.1" && contains "$out" "SIZE_OK"' "$out"
 t0=$(date +%s)
+# Recommendations adapt to the detected RAM (H1/H2). Fixture groups: Cursor ~3 GB, Brave ~1 GB, ...
+reco() { src "init_monitor_state; collect_procs precise; $1; build_recommendations"; }
+out8=$(reco 'MEM_TOTAL_MB=8192; VERDICT=HIGH')
+out128=$(reco 'MEM_TOTAL_MB=131072; VERDICT=HIGH')
+check "8 GB Mac: groups above 10% of RAM are named (unchanged)" 'contains "$out8" "* Cursor:"' "$out8"
+check "128 GB Mac under pressure: cutoff capped at 1 GB, consumers still named" 'contains "$out128" "* Cursor:" && [ "$(printf "%s\n" "$out128" | grep -c "^  \* ")" -ge 1 ]' "$out128"
+check "large RAM: only groups of 1 GB or more pass the capped cutoff" '[ "$(printf "%s\n" "$out128" | grep -c "^  \* ")" -le "$(printf "%s\n" "$out8" | grep -c "^  \* ")" ]' "8GB: $out8 / 128GB: $out128"
+out=$(reco 'MEM_TOTAL_MB=8192; APP_HEAVY_PCT=100; APP_HEAVY_CAP_MB=999999; VERDICT=WATCH')
+check "no group reaches the cutoff: the 3 largest are named, never an empty list" '[ "$(printf "%s\n" "$out" | grep -c "^  \* ")" = 3 ] && ! contains "$out" "System"' "$out"
+out=$(reco 'MEM_TOTAL_MB=8192; VERDICT=OK')
+check "no pressure: no consumer list" '! printf "%s\n" "$out" | grep -q "^  \* " && ! contains "$out" "Memory is"' "$out"
+out=$(src 'MEM_TOTAL_MB=65536; advice_for_group ollama "Local AI" 1 4000')
+check "local AI advice uses the detected RAM, not 8 GB" 'contains "$out" "64.0 GB RAM" && ! contains "$out" "8 GB"' "$out"
+
+# Commands printed for the user to paste are quoted safely, whatever the path contains (S2).
+qbad=""
+for p in "plain" "with space" "it's" "x'; touch $TMP/pwned; echo '" "\$(touch $TMP/pwned)" "back\`tick\`" "a\"b" "trailing\\"; do
+  q=$(PATH="$STUBS:$PATH" MPM_SOURCE_ONLY=1 "$SH" -c '. "$0"; shell_quote "$1"' "$SCRIPT" "$p")
+  back=$(eval "printf '%s' $q")
+  [ "$back" = "$p" ] || qbad="$qbad bash:[$p]->[$q]->[$back]"
+  if command -v zsh >/dev/null 2>&1; then
+    back=$(zsh -fc "printf '%s' $q")
+    [ "$back" = "$p" ] || qbad="$qbad zsh:[$p]->[$q]->[$back]"
+  fi
+done
+check "shell_quote: tricky paths round-trip in bash and zsh, nothing executed" '[ -z "$qbad" ] && [ ! -e "$TMP/pwned" ]' "$qbad"
+
 out=$(src 'run_with_timeout 1 sleep 30; echo "rc=$?"')
 t1=$(date +%s)
 check "run_with_timeout stops slow commands" 'contains "$out" "rc=143" && [ $((t1 - t0)) -le 4 ]' "$out"
@@ -258,6 +302,83 @@ check "symlinked work mode: second --work refused" '[ $rc = 1 ] && contains "$ou
 out=$(PATH="$STUBS:$PATH" "$SH" "$LINK" --stop --config "$CFG" 2>&1 < /dev/null)
 i=0; while [ "$i" -lt 30 ] && kill -0 "$WL" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
 check "symlinked work mode: --stop finds and stops it" 'contains "$out" "Stop signal sent to work mode (PID $WL)" && ! kill -0 "$WL" 2>/dev/null && [ ! -e "$TMP/data/state/work.pid" ]' "$out"
+
+PIDF="$TMP/data/state/work.pid"; LOCKD="$TMP/data/state/work.lock"
+# Runs a --work that must exit on its own; one wrongly allowed to start is stopped after 6 s.
+bounded_work() {   # outfile -> prints the exit code, or "still running"
+  PATH="$STUBS:$PATH" "$SH" "$SCRIPT" --work --config "$CFG" > "$1" 2>&1 < /dev/null &
+  local p=$! i=0
+  while [ "$i" -lt 60 ] && kill -0 "$p" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+  if kill -0 "$p" 2>/dev/null; then kill -TERM "$p"; wait "$p" 2>/dev/null; echo "still running"; else wait "$p"; echo $?; fi
+}
+running() { kill -0 "$1" 2>/dev/null && ! /bin/ps -o stat= -p "$1" 2>/dev/null | grep -q Z; }
+
+# Work mode started from the menu (item 11): no --work on its command line, yet it must be
+# recognised. Before the fix a second --work started and --stop deleted the live pidfile.
+MF="$TMP/menu11.fifo"; mkfifo "$MF"; MO="$TMP/menu11.out"
+# Started in one time zone, stopped from another (travel, DST): the start time must still match.
+TZ=Asia/Tokyo PATH="$STUBS:$PATH" "$SH" "$SCRIPT" --config "$CFG" < "$MF" > "$MO" 2>&1 &
+MW=$!; CHILDREN="$CHILDREN $MW"
+exec 6>"$MF"
+printf '11\n' >&6
+i=0; while [ "$i" -lt 100 ] && [ "$(head -n 1 "$PIDF" 2>/dev/null)" != "$MW" ]; do sleep 0.1; i=$((i + 1)); done
+check "menu work mode: pidfile holds the menu process and its start time" '[ "$(head -n 1 "$PIDF" 2>/dev/null)" = "$MW" ] && [ -n "$(sed -n 2p "$PIDF")" ]' "$(tail -n 5 "$MO")"
+rc=$(bounded_work "$TMP/menu11-second.out")
+check "menu work mode: a second --work is refused" '[ "$rc" = 1 ] && grep -q "already running (PID $MW)" "$TMP/menu11-second.out"' "rc=$rc; $(cat "$TMP/menu11-second.out")"
+check "menu work mode: the refused --work left the pidfile alone" '[ "$(head -n 1 "$PIDF" 2>/dev/null)" = "$MW" ]'
+out=$(TZ=America/New_York mpm --stop < /dev/null 2>&1)
+i=0; while [ "$i" -lt 100 ] && ! grep -q "WORK SESSION SUMMARY" "$MO"; do sleep 0.1; i=$((i + 1)); done
+check "menu work mode: --stop (other time zone) finds it; the session ends, the menu stays" 'contains "$out" "Stop signal sent to work mode (PID $MW)" && grep -q "WORK SESSION SUMMARY" "$MO" && running "$MW"' "$out / $(tail -n 5 "$MO")"
+i=0; while [ "$i" -lt 30 ] && [ -e "$PIDF" ]; do sleep 0.1; i=$((i + 1)); done
+check "menu work mode: pidfile removed when its session ends" '[ ! -e "$PIDF" ]'
+printf '13\n' >&6; exec 6>&-
+i=0; while [ "$i" -lt 50 ] && running "$MW"; do sleep 0.1; i=$((i + 1)); done
+wait "$MW" 2>/dev/null; rc=$?
+check "menu work mode: menu exits normally afterwards" '[ $rc = 0 ] && ! running "$MW"' "rc=$rc"
+
+# A pidfile naming a live process that is NOT the owner must never be signalled by --stop.
+ln -s "$(PATH=/usr/bin:/bin command -v sleep)" "$TMP/reuse-sleep"
+"$TMP/reuse-sleep" 120 & RP=$!; disown "$RP" 2>/dev/null; CHILDREN="$CHILDREN $RP"
+printf '%s\nMon Jan  1 00:00:00 2001\n' "$RP" > "$PIDF"
+out=$(mpm --stop < /dev/null 2>&1)
+check "--stop ignores a reused PID (start time differs) and removes the stale pidfile" 'contains "$out" "not running" && running "$RP" && [ ! -e "$PIDF" ]' "$out"
+printf '%s\n' "$RP" > "$PIDF"
+out=$(mpm --stop < /dev/null 2>&1)
+check "--stop ignores an old-style pidfile naming an unrelated process" 'contains "$out" "not running" && running "$RP" && [ ! -e "$PIDF" ]' "$out"
+rc=$( printf '%s\nMon Jan  1 00:00:00 2001\n' "$RP" > "$PIDF"; bounded_work "$TMP/reuse-work.out")
+check "stale pidfile (reused PID) does not block a new --work" '[ "$rc" = "still running" ] && grep -q "WORK SESSION" "$TMP/reuse-work.out"' "rc=$rc; $(head -n 5 "$TMP/reuse-work.out")"
+kill -TERM "$RP" 2>/dev/null
+rm -f "$PIDF"
+
+# Atomic lock (B2). A lock held by an instance that is starting: --work waits ~3 s, then gives up.
+mkdir "$LOCKD"
+rc=$(bounded_work "$TMP/lock-fresh.out")
+check "lock held by a starting instance: --work gives up (exit 1), claims nothing" '[ "$rc" = 1 ] && grep -q "starting right now" "$TMP/lock-fresh.out" && [ ! -e "$PIDF" ] && [ -d "$LOCKD" ]' "rc=$rc; $(cat "$TMP/lock-fresh.out")"
+out=$(mpm --stop < /dev/null 2>&1)
+check "--stop does not remove a lock it does not hold" 'contains "$out" "not running" && [ -d "$LOCKD" ]' "$out"
+# A lock left by an instance killed while holding it (older than a minute) is recovered.
+touch -t 202001010000 "$LOCKD"
+rc=$(bounded_work "$TMP/lock-stale.out")
+check "stale lock (killed instance) is recovered: --work starts" '[ "$rc" = "still running" ] && grep -q "WORK SESSION" "$TMP/lock-stale.out"' "rc=$rc; $(head -n 5 "$TMP/lock-stale.out")"
+check "lock is released once the pidfile is claimed" '[ ! -d "$LOCKD" ]'
+rm -f "$PIDF"
+
+# Several work modes started at the same moment: exactly one may run.
+RACE=""
+for n in 1 2 3 4 5; do
+  PATH="$STUBS:$PATH" "$SH" "$SCRIPT" --work --config "$CFG" > "$TMP/race$n.out" 2>&1 < /dev/null &
+  RACE="$RACE $!"
+done
+CHILDREN="$CHILDREN $RACE"
+sleep 5
+alive=""; for p in $RACE; do running "$p" && alive="$alive $p"; done
+refused=$(grep -lE "already running|starting right now" "$TMP"/race[1-5].out 2>/dev/null | wc -l | tr -d ' ')
+check "5 work modes started at once: exactly one runs, 4 refused" '[ "$(echo $alive | wc -w | tr -d " ")" = 1 ] && [ "$refused" = 4 ]' "alive:$alive refused:$refused"
+check "the survivor owns the pidfile; no lock left behind" '[ "$(head -n 1 "$PIDF" 2>/dev/null)" = "$(echo $alive)" ] && [ ! -d "$LOCKD" ]' "pidfile: $(head -n 1 "$PIDF" 2>/dev/null) alive:$alive"
+out=$(mpm --stop < /dev/null 2>&1)
+for p in $RACE; do i=0; while [ "$i" -lt 50 ] && running "$p"; do sleep 0.1; i=$((i + 1)); done; done
+alive=""; for p in $RACE; do running "$p" && { alive="$alive $p"; kill -TERM "$p"; }; done
+check "--stop stops the survivor; nothing left running" 'contains "$out" "Stop signal sent" && [ -z "$alive" ] && [ ! -e "$PIDF" ]' "$out / alive:$alive"
 
 # Ctrl+C in the interactive menu exits with 130 and leaves the terminal alone.
 FIFO="$TMP/fifo"; mkfifo "$FIFO"
@@ -771,6 +892,94 @@ if command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; then
 else
   skip "git-based disk safety tests" "git not usable"
 fi
+
+# ---------------------------------------------------------------------------
+echo "[data folder]"
+printf 'NOTIFICATIONS_ENABLED=false\nCOLOR=never\n' > "$TMP/nodata.env"
+FALLBACK="$HOME/Library/Application Support/mac-performance-manager"
+RW="$TMP/rw"; mkdir -p "$RW"; cp "$SCRIPT" "$RW/mpm.sh"
+out=$(PATH="$STUBS:$PATH" "$SH" "$RW/mpm.sh" --report --config "$TMP/nodata.env" 2>&1); rc=$?
+check "writable script folder: data stays next to the script (default unchanged)" '[ $rc = 0 ] && ls "$RW"/reports/report-*.txt >/dev/null 2>&1 && [ ! -e "$FALLBACK" ]' "$out"
+if [ "$(id -u)" = 0 ]; then
+  skip "read-only script folder" "running as root, every folder is writable"
+else
+  RO="$TMP/ro"; mkdir -p "$RO"; cp "$SCRIPT" "$RO/mpm.sh"; chmod 555 "$RO"
+  out=$(PATH="$STUBS:$PATH" "$SH" "$RO/mpm.sh" --report --config "$TMP/nodata.env" 2>&1); rc=$?
+  check "read-only script folder: data goes to ~/Library/Application Support, no warning" '[ $rc = 0 ] && ls "$FALLBACK"/reports/report-*.txt >/dev/null 2>&1 && [ -d "$FALLBACK/state" ] && ! contains "$out" "cannot write" && [ "$(ls -A "$RO")" = mpm.sh ]' "$out"
+  printf 'DATA_DIR=%s\nNOTIFICATIONS_ENABLED=false\nCOLOR=never\n' "$RO/data" > "$TMP/rodata.env"
+  out=$(PATH="$STUBS:$PATH" "$SH" "$RO/mpm.sh" --once --config "$TMP/rodata.env" 2>&1); rc=$?
+  check "DATA_DIR set but not writable: warned, never silently replaced" '[ $rc = 0 ] && contains "$out" "cannot write to $RO/data"' "$out"
+  chmod 755 "$RO"
+fi
+
+# ---------------------------------------------------------------------------
+echo "[install]"
+INST="$ROOT/install.sh"
+L="$HOME/.local/bin/mpm"; SHARE="$HOME/.local/share/mac-performance-manager"
+SYSPATH="/usr/bin:/bin:/usr/sbin:/sbin"
+check "installer syntax (bash -n)" '"$SH" -n "$INST"'
+out=$(grep -nE '(^|[;&|[:space:]])sudo[[:space:]]|rm -rf|zshrc|bash_profile|\.profile' "$INST" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'say ')
+check "installer: no sudo, no rm -rf, never writes a shell profile" '[ -z "$out" ]' "$out"
+
+out=$(PATH="$SYSPATH" "$SH" "$INST" 2>&1); rc=$?
+check "clone install: mpm links to the clone and runs" '[ $rc = 0 ] && [ "$(readlink "$L")" = "$SCRIPT" ] && "$L" --version | grep -q "mac-performance-manager 1." && contains "$out" "Installed: mac-performance-manager"' "$out"
+check "clone install: PATH hint printed, shell profile untouched" 'contains "$out" "is not in your PATH yet" && contains "$out" "export PATH=\"\$HOME/.local/bin:\$PATH\"" && [ ! -e "$HOME/.zshrc" ]' "$out"
+out=$(PATH="$HOME/.local/bin:$SYSPATH" "$SH" "$INST" 2>&1); rc=$?
+check "re-running the installer is harmless; no PATH hint once on PATH" '[ $rc = 0 ] && [ "$(readlink "$L")" = "$SCRIPT" ] && ! contains "$out" "not in your PATH"' "$out"
+
+rm -f "$L"; printf '#!/bin/sh\necho other\n' > "$L"; chmod +x "$L"
+out=$(PATH="$SYSPATH" "$SH" "$INST" 2>&1); rc=$?
+check "an unrelated ~/.local/bin/mpm is never replaced" '[ $rc = 1 ] && [ ! -L "$L" ] && grep -q "echo other" "$L" && contains "$out" "left alone"' "$out"
+out=$(PATH="$SYSPATH" "$SH" "$INST" --uninstall 2>&1); rc=$?
+check "uninstall leaves an unrelated mpm alone" '[ $rc = 0 ] && grep -q "echo other" "$L" && contains "$out" "not Mac Performance Manager"' "$out"
+rm -f "$L"
+
+# One-command install: the installer is piped into bash and downloads from MPM_INSTALL_URL
+# (a local file:// copy here; the tests never use the network).
+RAW="$TMP/raw"; mkdir -p "$RAW"; cp "$SCRIPT" "$ROOT/config.env.example" "$RAW/"
+out=$(cd "$TMP" && MPM_INSTALL_URL="file://$RAW" PATH="$SYSPATH" "$SH" < "$INST" 2>&1); rc=$?
+check "one-command install (piped): script downloaded, linked, runs" '[ $rc = 0 ] && [ "$(readlink "$L")" = "$SHARE/mac-performance-manager.sh" ] && [ -x "$SHARE/mac-performance-manager.sh" ] && [ -f "$SHARE/config.env.example" ] && "$L" --version | grep -q "mac-performance-manager 1."' "$out"
+perms=$(ls -ld "$SHARE" | cut -c1-10)
+check "install folder is private (drwx------)" '[ "$perms" = drwx------ ]' "$perms"
+PATH="$STUBS:$PATH" "$L" --once --no-color > /dev/null 2>&1
+check "downloaded install keeps its data in its own folder" '[ -d "$SHARE/state" ] && [ -d "$SHARE/logs" ]'
+sum0=$(cksum < "$SHARE/mac-performance-manager.sh")
+BAD="$TMP/rawbad"; mkdir -p "$BAD"; echo '<html>404 Not Found</html>' > "$BAD/mac-performance-manager.sh"
+out=$(MPM_INSTALL_URL="file://$BAD" PATH="$SYSPATH" "$SH" < "$INST" 2>&1); rc=$?
+check "invalid download rejected; installed copy unchanged" '[ $rc = 1 ] && contains "$out" "not a valid" && [ "$(cksum < "$SHARE/mac-performance-manager.sh")" = "$sum0" ] && ! ls -A "$SHARE" | grep -q download' "$out"
+out=$(MPM_INSTALL_URL="file://$TMP/nowhere" PATH="$SYSPATH" "$SH" < "$INST" 2>&1); rc=$?
+check "failed download changes nothing" '[ $rc = 1 ] && contains "$out" "download failed" && [ "$(cksum < "$SHARE/mac-performance-manager.sh")" = "$sum0" ] && [ "$(readlink "$L")" = "$SHARE/mac-performance-manager.sh" ]' "$out"
+
+printf 'NOTIFICATIONS_ENABLED=false\nCOLOR=never\n' > "$SHARE/config.env"
+PATH="$STUBS:$PATH" "$L" --work > "$TMP/inst-work.out" 2>&1 < /dev/null &
+IW=$!; CHILDREN="$CHILDREN $IW"
+i=0; while [ "$i" -lt 50 ] && [ ! -s "$SHARE/state/work.pid" ]; do sleep 0.1; i=$((i + 1)); done
+out=$(PATH="$SYSPATH" "$SH" "$INST" --uninstall 2>&1); rc=$?
+check "uninstall refuses while a work mode runs from the install folder" '[ $rc = 1 ] && contains "$out" "mpm --stop" && [ -L "$L" ] && [ -f "$SHARE/mac-performance-manager.sh" ]' "$out"
+PATH="$STUBS:$PATH" "$L" --stop < /dev/null > /dev/null 2>&1
+i=0; while [ "$i" -lt 50 ] && kill -0 "$IW" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+out=$(PATH="$SYSPATH" "$SH" -s -- --uninstall < "$INST" 2>&1); rc=$?
+gone=$(ls "$HOME/.Trash" | grep '^mac-performance-manager-removed-' | head -n 1)
+check "uninstall: command removed, install folder moved to the Trash (recoverable)" '[ $rc = 0 ] && [ ! -L "$L" ] && [ ! -e "$SHARE" ] && [ -n "$gone" ] && [ -f "$HOME/.Trash/$gone/mac-performance-manager.sh" ] && [ -d "$HOME/.Trash/$gone/state" ]' "$out"
+PATH="$SYSPATH" "$SH" "$INST" > /dev/null 2>&1
+out=$(PATH="$SYSPATH" "$SH" "$INST" --uninstall 2>&1); rc=$?
+check "uninstall of a clone install: link removed, clone untouched" '[ $rc = 0 ] && [ ! -L "$L" ] && [ -f "$SCRIPT" ] && [ -f "$INST" ] && contains "$out" "was not touched"' "$out"
+# Printed commands must work when pasted, even from a clone whose path has spaces and quotes.
+ODD="$HOME/My Clone's \"copy\""; mkdir -p "$ODD"; cp "$INST" "$SCRIPT" "$ROOT/config.env.example" "$ODD/"
+out=$(PATH="$SYSPATH" "$SH" "$ODD/install.sh" 2>&1); rc=$?
+cmd=$(printf '%s\n' "$out" | sed -n 's/^  settings  optional:  //p')
+(cd "$TMP" && eval "$cmd") > /dev/null 2>&1
+check "printed settings command works when pasted (path with spaces and quotes)" '[ $rc = 0 ] && [ -n "$cmd" ] && [ -f "$ODD/config.env" ] && [ "$(readlink "$L")" = "$ODD/mac-performance-manager.sh" ]' "$out"
+echo "MY_OWN_SETTINGS" > "$ODD/config.env"
+(cd "$TMP" && eval "$cmd") > /dev/null 2>&1
+out=$(PATH="$SYSPATH" "$SH" "$ODD/install.sh" 2>&1)
+check "an existing config.env is never overwritten, not even by the printed command" 'grep -q MY_OWN_SETTINGS "$ODD/config.env" && contains "$out" "yours, kept as is" && ! contains "$out" "cp -n"' "$out"
+pathcmd=$(printf '%s\n' "$out" | sed -n "s/^  echo '\(export PATH=.*\)' >> .*/\1/p")
+got=$(PATH="$SYSPATH" "$SH" -c "$pathcmd"' && printf "%s" "${PATH%%:*}"')
+check "printed PATH line adds ~/.local/bin" '[ "$got" = "$HOME/.local/bin" ]' "cmd: $pathcmd -> $got"
+PATH="$SYSPATH" "$SH" "$ODD/install.sh" --uninstall > /dev/null 2>&1
+out=$(PATH="$SYSPATH" "$SH" "$INST" --uninstall 2>&1); rc=$?
+check "uninstall when nothing is installed" '[ $rc = 0 ] && contains "$out" "Nothing to remove"' "$out"
 
 # ---------------------------------------------------------------------------
 echo "[compatibility]"

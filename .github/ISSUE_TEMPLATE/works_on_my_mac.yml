@@ -1,0 +1,29 @@
+name: Tested on my Mac
+description: Report that it works (or not) on a Mac model or macOS version
+labels: [compatibility]
+body:
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model, chip and RAM
+      placeholder: "Mac mini M4, 16 GB / MacBook Pro Intel i7, 16 GB"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and mpm version
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options: ["Everything looks right", "Something looks wrong (describe below)"]
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output of `mpm --once`, and anything that looked wrong
+      render: text

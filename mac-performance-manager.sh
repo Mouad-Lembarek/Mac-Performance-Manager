@@ -7,8 +7,11 @@
 # Design rules
 #   * Native macOS tools only (vm_stat, sysctl, ps, top, df, pmset, lsof).
 #   * No network access, no telemetry, no sudo, no background daemons.
-#   * Never kills, quits, or deletes anything without an explicit typed
+#   * Never kills, quits, or deletes anything of yours without an explicit typed
 #     confirmation from you. Never deletes permanently (moves to Trash).
+#     Sole exception, OFF by default: the opt-in AUTO_STOP_IDLE_* rules may send
+#     SIGTERM (never SIGKILL) to an idle TypeScript server / dev server during a
+#     work session, under sustained pressure, after a notice you can cancel (x).
 #   * Compatible with macOS /bin/bash 3.2 and the BSD userland.
 #
 # Usage: ./mac-performance-manager.sh [--help|--work|--report|--live|--once|--stop]
@@ -43,7 +46,7 @@ SCRIPT_DIR=$(cd -P "$(dirname "$_mpm_src")" && pwd)
 # =============================================================================
 init_globals() {
   EXITING=0; WORK_ACTIVE=0; STOP_REQUESTED=0; SLEEP_PID=""; LIVE_ACTIVE=0
-  SAVED_STTY=""; OWN_PIDFILE=0; DIRS_OK=0; FORCE_NO_COLOR=0
+  SAVED_STTY=""; OWN_PIDFILE=0; WORK_LOCK_HELD=0; DIRS_OK=0; FORCE_NO_COLOR=0
   CONFIG_FILE=""; CONFIG_WARNINGS=""; CONFIG_STATUS="defaults"
   OS_NAME=""; ARCH=""; MACOS_VERSION=""; MACOS_BUILD=""; HW_MODEL=""; MODEL_NAME=""
   CPU_BRAND=""; NCPU=1; PCORES=""; ECORES=""; TRANSLATED=0; CURRENT_UID=""
@@ -113,6 +116,9 @@ fmt_mb() {
   fi
 }
 fmt_mb_signed() { if is_int "${1:-}" && [ "$1" -ge 0 ]; then printf '+%s' "$(fmt_mb "$1")"; else fmt_mb "${1:-}"; fi; }
+
+# Single-quote a string for a command the user may paste into bash/zsh: a'b -> 'a'\''b'
+shell_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 fmt_duration() {
   local s=${1:-0} d h m
@@ -241,6 +247,7 @@ set_defaults() {
   DISK_FREE_WARN_GB=20
   DISK_FREE_CRIT_GB=10
   APP_HEAVY_PCT=10
+  APP_HEAVY_CAP_MB=1024   # not configurable: upper bound for the APP_HEAVY_PCT cutoff on large-RAM Macs
   APP_CANDIDATE_MIN_MB=300
   TOP_N=15
   LOGGING_ENABLED=true
@@ -449,14 +456,25 @@ detect_platform() {
   CURRENT_UID=$(id -u)
 }
 
-init_dirs() {
-  [ -n "$DATA_DIR" ] || DATA_DIR=$SCRIPT_DIR
+use_data_dir() {   # dir -> 0 if logs/, reports/ and state/ exist (or were created) and are writable
+  DATA_DIR=$1
   LOG_DIR="$DATA_DIR/logs"; REPORT_DIR="$DATA_DIR/reports"; STATE_DIR="$DATA_DIR/state"
   EVENT_LOG="$LOG_DIR/events.log"; HISTORY_FILE="$STATE_DIR/history.tsv"; PIDFILE="$STATE_DIR/work.pid"
-  if mkdir -p "$LOG_DIR" "$REPORT_DIR" "$STATE_DIR" 2>/dev/null && [ -w "$STATE_DIR" ]; then
+  mkdir -p "$LOG_DIR" "$REPORT_DIR" "$STATE_DIR" 2>/dev/null && [ -w "$STATE_DIR" ] && [ -w "$LOG_DIR" ] && [ -w "$REPORT_DIR" ]
+}
+
+init_dirs() {
+  DIRS_OK=0
+  if [ -n "$DATA_DIR" ]; then
+    use_data_dir "$DATA_DIR" && DIRS_OK=1   # set in config: used as is, never replaced
+  elif use_data_dir "$SCRIPT_DIR"; then
     DIRS_OK=1
   else
-    DIRS_OK=0; LOGGING_ENABLED=false; HISTORY_ENABLED=false
+    # Script folder not writable (e.g. installed system-wide): keep the data in a per-user folder.
+    use_data_dir "$HOME/Library/Application Support/mac-performance-manager" && DIRS_OK=1
+  fi
+  if [ "$DIRS_OK" != 1 ]; then
+    LOGGING_ENABLED=false; HISTORY_ENABLED=false
     warn "cannot write to $DATA_DIR; logging, history and reports are disabled."
   fi
 }
@@ -987,27 +1005,32 @@ advice_for_group() {   # app cat count mem_mb
     Docker|VM) echo "$app: ~$mem. Stop containers you do not need (docker stop NAME) or quit Docker Desktop; you can lower its memory limit in Docker Settings > Resources." ;;
     Node.js|Python|"JS runtime") echo "$app: $cnt processes using ~$mem. Check menu 8 for dev servers, watchers or agents you no longer need." ;;
     Database) echo "$app (database): ~$mem. Stop it via its own tool (brew services stop / docker stop) if you are not using it now." ;;
-    "Local AI") echo "$app (local AI model runtime): ~$mem. On 8 GB a loaded model competes directly with Cursor and Brave; unload it when idle (e.g. ollama stop MODEL)." ;;
+    "Local AI") echo "$app (local AI model runtime): ~$mem. A loaded model holds that memory even when idle, out of $(fmt_mb "$MEM_TOTAL_MB") RAM in total; unload it when idle (e.g. ollama stop MODEL)." ;;
     App) echo "$app: ~$mem across $cnt processes. Quit it if you are not actively using it (menu 10 > Quit app gracefully)." ;;
     *) echo "$app: ~$mem across $cnt processes. Investigate if this is unexpected." ;;
   esac
 }
 
 build_recommendations() {
-  local any=0 heavy_mb line app cat cnt mem rss cpu pid name
+  local any=0 heavy_mb line app cat cnt mem rss cpu pid name listed
+  # APP_HEAVY_PCT of RAM, capped at APP_HEAVY_CAP_MB: on a 64-128 GB Mac 10% would be 6-13 GB,
+  # and pressure there is usually several 2-5 GB apps, none of which would be named.
   heavy_mb=$((MEM_TOTAL_MB * APP_HEAVY_PCT / 100))
+  [ "$heavy_mb" -gt "$APP_HEAVY_CAP_MB" ] && heavy_mb=$APP_HEAVY_CAP_MB
   case $VERDICT in
     HIGH|CRITICAL|WATCH)
       [ "$VERDICT" = WATCH ] && echo "- Memory is getting tight (not yet sustained). If the Mac feels slow, start with the largest consumers below."
       [ "$VERDICT" != WATCH ] && echo "- Memory is under sustained pressure. Save your work, then reduce load starting with the largest consumers:"
       any=1
+      # Groups above the cutoff; if none reaches it, still name the 3 largest (never an empty list).
+      listed=$(group_totals | head -n 8 | awk -F'\t' -v h="$heavy_mb" '
+        $1 != "" && $2 != "System" { n++; r[n] = $0; if (int($4 / 1024) >= h) big++ }
+        END { for (i = 1; i <= n; i++) { split(r[i], f, "\t"); if (big ? int(f[4] / 1024) >= h : i <= 3) print r[i] } }')
       while IFS="$TAB" read -r app cat cnt mem rss cpu; do
         [ -n "$app" ] || continue
-        [ "$cat" = System ] && continue
-        [ $((mem / 1024)) -ge "$heavy_mb" ] || continue
         echo "  * $(advice_for_group "$app" "$cat" "$cnt" $((mem / 1024)))"
       done <<EOF
-$(group_totals | head -n 8)
+$listed
 EOF
       ;;
   esac
@@ -1559,7 +1582,7 @@ trash_artifact_flow() {
   else
     echo "Could not move it to the Trash (Finder automation not allowed, or permission denied)."
     echo "If you still want it gone, remove it yourself after double-checking the path:"
-    printf "  rm -rf -- '%s'\n" "$p"
+    printf '  rm -rf -- %s\n' "$(shell_quote "$p")"
   fi
 }
 
@@ -1919,16 +1942,39 @@ live_mode() {
   restore_terminal
 }
 
+# pid -> start time in UTC (unaffected by a time-zone or DST change while it runs), spaces normalised
+proc_start() { TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null | awk '{ $1 = $1; print }'; }
+
 pidfile_alive() {   # -> prints pid if a live work-mode instance owns the pidfile
   [ "$DIRS_OK" = 1 ] && [ -f "$PIDFILE" ] || return 1
-  local pid st args; pid=$(head -n 1 "$PIDFILE" 2>/dev/null | tr -cd '0-9'); st=$(sed -n 2p "$PIDFILE" 2>/dev/null)
+  local pid st args; pid=$(head -n 1 "$PIDFILE" 2>/dev/null | tr -cd '0-9'); st=$(sed -n 2p "$PIDFILE" 2>/dev/null | awk '{ $1 = $1; print }')
   is_uint "$pid" || return 1
   kill -0 "$pid" 2>/dev/null || return 1
+  # The owner records its own PID and start time. That pair identifies it however work mode was
+  # started (--work, menu item 11, a symlink such as ~/bin/mpm), and a reused PID has a later
+  # start time, so it is never mistaken for the owner.
+  [ -n "$st" ] && [ "$(proc_start "$pid")" = "$st" ] && { echo "$pid"; return 0; }
+  # Pidfile written by an older version (local-time or no start time): its own --work command line.
   args=$(ps -o args= -p "$pid" 2>/dev/null)
   case $args in *mac-performance-manager*--work*) echo "$pid"; return 0 ;; esac
-  # Started through a symlink (e.g. ~/bin/mpm): identify it by --work plus its recorded start time.
-  case $args in *" --work"*) [ -n "$st" ] && [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$st" ] && { echo "$pid"; return 0; } ;; esac
   return 1
+}
+
+# mkdir is atomic: only one instance at a time can run "check the pidfile, then claim it", so two
+# work modes started at the same moment cannot both start. Held for milliseconds only.
+work_lock() {   # acquire|release
+  local lock="$STATE_DIR/work.lock" i=0
+  if [ "$1" = release ]; then
+    [ "$WORK_LOCK_HELD" = 1 ] && rmdir "$lock" 2>/dev/null
+    WORK_LOCK_HELD=0; return 0
+  fi
+  while ! mkdir "$lock" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -gt 30 ] && return 1
+    # A lock older than a minute was left by an instance killed while holding it.
+    if [ -n "$(find "$lock" -maxdepth 0 -type d -mmin +1 2>/dev/null)" ]; then rmdir "$lock" 2>/dev/null; continue; fi
+    sleep 0.1
+  done
+  WORK_LOCK_HELD=1
 }
 
 remove_own_pidfile() {
@@ -2748,7 +2794,7 @@ session_report() {   # now
   [ "$SWAP_TREND" = growing ] && { echo "    - swap growing: $(swap_trend_text)"; any=1; }
   [ "$any" = 0 ] && echo "    - none measured at the end"
   echo "  The manager measures and makes safe actions easier; it cannot add RAM. If the workload"
-  echo "  is larger than 8 GB, only running less at once (windows, tabs, servers) helps."
+  echo "  is larger than this Mac's $(fmt_mb "$MEM_TOTAL_MB") of RAM, only running less at once (windows, tabs, servers) helps."
 }
 
 kill_own_helpers() {   # stops only helpers this shell started, verified by parent PID
@@ -2785,11 +2831,21 @@ work_status_line() {
 
 work_mode() {   # [from_menu]
   local other
+  if [ "$DIRS_OK" = 1 ] && ! work_lock acquire; then
+    echo "Another work mode is starting right now. Try again in a moment."
+    return 1
+  fi
   if other=$(pidfile_alive); then
+    work_lock release
     echo "Work mode is already running (PID $other). Stop it with: $0 --stop"
     return 1
   fi
-  if [ "$DIRS_OK" = 1 ]; then { echo "$$"; ps -o lstart= -p "$$" 2>/dev/null; } > "$PIDFILE" && OWN_PIDFILE=1; fi
+  if [ "$DIRS_OK" = 1 ]; then
+    # Written whole, then renamed: a reader never sees a PID without its start time.
+    { echo "$$"; proc_start "$$"; } > "$PIDFILE.tmp.$$" 2>/dev/null && mv -f -- "$PIDFILE.tmp.$$" "$PIDFILE" && OWN_PIDFILE=1
+    rm -f -- "$PIDFILE.tmp.$$"
+    work_lock release
+  fi
   WORK_ACTIVE=1; STOP_REQUESTED=0
   local now next=0 text file wait_s d
   init_monitor_state; seed_swap_history "$(now_epoch)"; trim_history; collect_uptime; load_model_name
@@ -2859,7 +2915,11 @@ stop_work_mode() {
   local pid
   if ! pid=$(pidfile_alive); then
     echo "Work mode is not running."
-    [ "$DIRS_OK" = 1 ] && [ -f "$PIDFILE" ] && rm -f -- "$PIDFILE"
+    # Remove a stale pidfile, but never one that an instance is claiming at this moment.
+    if [ "$DIRS_OK" = 1 ] && [ -f "$PIDFILE" ] && work_lock acquire; then
+      pidfile_alive >/dev/null || rm -f -- "$PIDFILE"
+      work_lock release
+    fi
     return 0
   fi
   if is_tty; then
@@ -2976,8 +3036,12 @@ Options:
   --config FILE   Use FILE instead of config.env next to the script (or set MPM_CONFIG)
   --no-color      Disable colors (NO_COLOR is also respected)
 
-Safety: no sudo, no network, no automatic kills or deletions. Every termination or
-Trash move is shown in full and needs a typed confirmation. See README.md.
+Safety: no sudo, no network, never deletes your files. Every termination you start and every
+Trash move is shown in full and needs a typed confirmation. The only automatic stops
+are the opt-in AUTO_STOP_IDLE_* rules (off by default): SIGTERM to an idle TypeScript
+or dev server under sustained pressure, announced first (x cancels). See README.md.
+
+Exit status: --check-config exits 1 when the configuration has errors.
 EOF
 }
 
@@ -2997,6 +3061,7 @@ on_exit() {
   kill_own_helpers
   restore_terminal
   remove_own_pidfile
+  work_lock release
   exit "$rc"
 }
 
@@ -3026,7 +3091,11 @@ main() {
   set_defaults
   load_config "$cfg"
   setup_colors
-  if [ "$mode" = checkconfig ]; then print_config; return 0; fi
+  if [ "$mode" = checkconfig ]; then
+    print_config
+    [ -z "$CONFIG_WARNINGS" ] || return 1   # every warning is an invalid or ignored setting
+    return 0
+  fi
   [ -n "$CONFIG_WARNINGS" ] && printf '%s\n' "$CONFIG_WARNINGS" | while IFS= read -r w; do warn "config: $w"; done
   trap on_exit EXIT
   trap 'on_signal INT 130' INT
