@@ -3,7 +3,7 @@
 The complete reference. For installation and a quick start, see the [README](../README.md).
 Settings are documented line by line in [`config.env.example`](../config.env.example).
 
-- [Usage](#usage) · [Menu](#menu) · [How memory is judged](#how-memory-is-judged)
+- [Usage](#usage) · [Free up memory](#free-up-memory) · [Menu](#menu) · [How memory is judged](#how-memory-is-judged)
 - [Cursor diagnostics](#cursor-diagnostics-menu-7) · [Development processes](#development-processes-menu-8) · [Disk](#disk-menu-4)
 - [Safety model](#safety-model) · [Work mode](#work-mode-work-session) · [Configuration](#configuration)
 - [Files and privacy](#files-and-privacy) · [Troubleshooting](#troubleshooting) · [Limitations](#limitations)
@@ -21,6 +21,7 @@ After installing, `mpm` works in place of `./mac-performance-manager.sh` everywh
 | `./mac-performance-manager.sh --work` | Work mode for the whole day. `q` or Ctrl+C stops it |
 | `./mac-performance-manager.sh --report` | Concise report, printed and saved in `reports/` |
 | `./mac-performance-manager.sh --once` | Print one overview and exit |
+| `./mac-performance-manager.sh --free` | Free up memory: ranked plan, you approve each step |
 | `./mac-performance-manager.sh --stop` | Stop a work mode running in another terminal |
 | `./mac-performance-manager.sh --check-config` | Show effective settings and config warnings |
 | `./mac-performance-manager.sh --help` | Help |
@@ -40,10 +41,34 @@ Options: `--config FILE` (or `MPM_CONFIG=FILE`) uses another config file;
 
 ---
 
+## Free up memory
+
+`mpm --free`, menu item **f**, or the **f** key in work mode. It measures per-process memory
+(physical footprint, about 2 s), then lists up to 10 steps, largest first:
+
+| Step | What it does | What it costs you |
+|---|---|---|
+| **stop process** | A development process of yours (dev server, `tsserver`, watcher, runtime) | Shown per process, e.g. "TypeScript errors pause; Cursor restarts it", or "the server on port 3000 stops" |
+| **quit app** | Asks a regular app to quit normally (it can ask you to save) | Its windows close; for Cursor, its agents and terminals stop. Marked "idle right now" when it uses almost no CPU |
+| **close heavy tabs** | Browsers: shows how much they use and how to find heavy tabs (Shift+Esc) | Read-only: the tool cannot see or close tabs |
+
+Nothing happens until you pick a number. A process step then goes through the full review of
+the [safety model](#safety-model) (details, typed `yes`, identity re-check, SIGTERM first); an
+app step asks before sending the quit request. After each step the plan measures again, shows
+the effect (macOS free estimate and memory used, before -> after) and offers the refreshed
+list. Enter ends it with a summary since the start. In work mode, each decision is recorded in
+the session report.
+
+Sizes overlap: a process started by an app (for example `tsserver` under Cursor) is also counted
+in that app's total, so do not add them up. The terminal running the manager is never offered.
+
+---
+
 ## Menu
 
 | # | Item | Notes |
 |---|---|---|
+| f | Free up memory | [Ranked plan](#free-up-memory); you approve each step |
 | 1 | Live system overview | Cheap `ps`-based sampling. `q` returns to the menu, Ctrl+C exits |
 | 2 | Memory diagnostics | Pressure, breakdown, compression, swap rates, swap history, grouped apps |
 | 3 | CPU diagnostics | 1-second `top` sample plus 3 `ps` samples to find *consistently* busy processes |
@@ -97,9 +122,17 @@ Swap shrinks slowly after you close apps; that is normal.
 | RSS MB (per process) | `ps` | Resident memory; used in live/work mode because it is cheaper |
 
 **Group totals** (for example "Cursor ~3.7 GB across 8 processes") are sums of per-process
-values. Summing RSS double-counts memory that Chromium/Electron helper processes share,
-so RSS totals are an upper bound. Footprint sums are closer to reality but still
-approximate. The tool labels which one you are looking at.
+values. Processes that Cursor starts and that are not a known runtime (the TypeScript server,
+extension hosts that rename themselves) count toward Cursor, because they go away with its
+windows; Node.js and Python processes keep their own group.
+
+Summed RSS can be wrong in both directions: it double-counts memory that Chromium/Electron
+helper processes share, and it leaves out compressed and swapped-out memory, which on a Mac
+under pressure can be most of an app's memory (one real case: Brave at 0.8 GB RSS, 3.9 GB
+footprint). Footprint sums are closer to reality but still approximate. The tool labels which
+one you are looking at. In work mode, the advice that comes with a warning is always based on a
+fresh footprint measurement; where a view has to use RSS (live mode), the advice says that
+real use is higher.
 
 ### "Started by"
 
@@ -311,6 +344,7 @@ command): the pidfile in `state/` records its PID and start time.
 
 | Key | Action |
 |---|---|
+| `f` | [Free up memory](#free-up-memory): ranked plan, you approve each step |
 | `s` | Status: state, sampling interval, last sample |
 | `t` | Top consumers (detailed sample; reused if you ask again before the next sample) |
 | `d` | Diagnose, then choose: browser memory help, stop a dev process, quit an app, or ignore |

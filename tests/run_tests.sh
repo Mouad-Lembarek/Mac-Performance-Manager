@@ -166,6 +166,19 @@ check "Node.js dev server in Cursor terminal" '[ "$(row 1102)" = "R|Node.js|Node
 check "Brave helper grouped under Brave" '[ "$(row 1201)" = "F|Brave|Brave|Brave Browser Helper (Renderer)|-|renderer" ]' "$(row 1201)"
 check "framework Python and venv python3" '[ "$(row 1500)" = "R|Python|Python|Python|Terminal|main" ] && [ "$(row 1501)" = "R|Python|Python|python3|Terminal|-" ]' "$(row 1500) / $(row 1501)"
 check "Docker backend, VM, local AI, system" '[ "$(row 1601)" = "R|Docker|Docker|com.docker.backend|-|tool" ] && [ "$(row 1600)" = "F|Virtual machine|VM|com.apple.Virtualization.VirtualMachine|-|-" ] && [ "$(row 1700)" = "R|ollama|Local AI|ollama|-|-" ] && [ "$(row 150)" = "R|WindowServer|System|WindowServer|-|-" ]' "$(row 1601) $(row 1600) $(row 1700) $(row 150)"
+# Processes Cursor starts that rename themselves (extension hosts) or are unclassified (tsserver)
+# count toward Cursor; runtimes keep their group, and other apps' children are not reassigned.
+{ cat "$MPM_FIX/ps.txt"
+  printf ' 1010  1004 @UID@  400000   0.2 Cursor Helper (Plugin): extension-host (user) proj [1-1]\n'
+  printf ' 1011  1004 @UID@  300000   0.0 tsserver[6.0.3]: semantic\n'
+  printf ' 1012  1499 @UID@  200000   0.5 claude\n'; } > "$MPM_FAKE_STATE/ps.txt"
+out=$(src 'collect_procs fast; printf "%s\n" "$PROCS"; echo "SUM $SUM_CUR_N $SUM_CUR_PLUG"')
+rm -f "$MPM_FAKE_STATE/ps.txt"
+check "renamed Cursor extension host grouped under Cursor (plugin)" '[ "$(row 1010)" = "R|Cursor|Cursor|Cursor Helper (Plugin): extension-host (user) proj [1-1]|Cursor|plugin" ]' "$(row 1010)"
+check "tsserver started by Cursor grouped under Cursor" '[ "$(row 1011)" = "R|Cursor|Cursor|tsserver[6.0.3]: semantic|Cursor|tool" ]' "$(row 1011)"
+check "Node.js started by Cursor keeps its own group" '[ "$(row 1100 | cut -d"|" -f2-3)" = "Node.js|Node.js" ]' "$(row 1100)"
+check "a process started by Terminal is not reassigned to Terminal" '[ "$(row 1012)" = "R|claude|Other|claude|Terminal|-" ]' "$(row 1012)"
+check "Cursor totals include them (10 processes, 3 plugin hosts)" 'contains "$out" "SUM 10 3"' "$(printf '%s\n' "$out" | tail -n 1)"
 out=$(src 'collect_procs fast; echo "$PROC_MEM_SRC $SUM_CUR_N $SUM_CUR_REND $SUM_CUR_PLUG $SUM_NODE_N $SUM_PY_N $SUM_BRAVE_N"')
 check "fast mode uses RSS and counts groups" '[ "$out" = "RSS 8 2 2 2 2 3" ]' "$out"
 
@@ -214,6 +227,17 @@ check "128 GB Mac under pressure: cutoff capped at 1 GB, consumers still named" 
 check "large RAM: only groups of 1 GB or more pass the capped cutoff" '[ "$(printf "%s\n" "$out128" | grep -c "^  \* ")" -le "$(printf "%s\n" "$out8" | grep -c "^  \* ")" ]' "8GB: $out8 / 128GB: $out128"
 out=$(reco 'MEM_TOTAL_MB=8192; APP_HEAVY_PCT=100; APP_HEAVY_CAP_MB=999999; VERDICT=WATCH')
 check "no group reaches the cutoff: the 3 largest are named, never an empty list" '[ "$(printf "%s\n" "$out" | grep -c "^  \* ")" = 3 ] && ! contains "$out" "System"' "$out"
+out=$(src 'init_monitor_state; collect_procs fast; VERDICT=HIGH; build_recommendations')
+check "advice from RSS says that real use is higher" 'contains "$out" "resident memory only"' "$out"
+check "advice from footprints carries no RSS caveat" '! contains "$out8" "resident memory only"' "$out8"
+# The HIGH message must not claim "nothing is closed automatically" when an opt-in rule is on.
+brief() { src "session_init; collect_procs precise; VERDICT_REASON=test; S_RECO_PRINTED=1; $1; session_pressure_brief"; }
+out=$(brief 'true')
+check "HIGH message, auto rules off: nothing is closed automatically" 'contains "$out" "nothing is closed automatically" && contains "$out" "f = free up memory"' "$out"
+out=$(brief 'AUTO_STOP_IDLE_TSSERVER=true')
+check "HIGH message, TypeScript rule on: says so, no false claim" 'contains "$out" "Only your opt-in rule(s) may act: idle TypeScript servers, after a 60s notice" && ! contains "$out" "nothing is closed automatically"' "$out"
+out=$(brief 'AUTO_STOP_IDLE_TSSERVER=true; AUTO_STOP_IDLE_DEVSERVER=true')
+check "HIGH message, both rules on: names both" 'contains "$out" "idle TypeScript servers and idle dev servers"' "$out"
 out=$(reco 'MEM_TOTAL_MB=8192; VERDICT=OK')
 check "no pressure: no consumer list" '! printf "%s\n" "$out" | grep -q "^  \* " && ! contains "$out" "Memory is"' "$out"
 out=$(src 'MEM_TOTAL_MB=65536; advice_for_group ollama "Local AI" 1 4000')
@@ -251,6 +275,26 @@ perms=$(ls -l "$rep" | cut -c1-10)
 check "report is private (-rw-------)" '[ "$perms" = "-rw-------" ]' "$perms"
 out=$(mpm --stop </dev/null 2>&1)
 check "--stop when nothing runs" 'contains "$out" "not running"' "$out"
+
+# --free: a ranked plan; nothing happens without a choice and a confirmation.
+out=$(mpm --free </dev/null 2>&1); rc=$?
+check "--free without input: plan shown, nothing changed" '[ $rc = 0 ] && contains "$out" "FREE UP MEMORY - ranked plan" && contains "$out" "Nothing was changed." && contains "$out" "close heavy tabs" && contains "$out" "quit app" && contains "$out" "stop process (PID"' "$out"
+sizes=$(printf '%s\n' "$out" | sed -n 's/^ *[0-9][0-9]*) .* ~\([0-9.]*\) \([MG]B\) .*/\1 \2/p' | awk '{ print ($2 == "GB" ? $1 * 1024 : $1) }')
+check "--free: steps ranked by size, largest first" '[ -n "$sizes" ] && [ "$sizes" = "$(printf "%s\n" "$sizes" | sort -nr)" ]' "$sizes"
+item() { printf '%s\n' "$out" | grep -E "^ *[0-9]+\) $1 " | head -n 1 | sed -E 's/^ *([0-9]+)\).*/\1/'; }
+nCur=$(item Cursor); nBrave=$(item Brave)
+calls0=$(cat "$MPM_FAKE_STATE/osascript.calls" 2>/dev/null | wc -l | tr -d ' ')
+out=$(printf '%s\nn\n\n' "$nCur" | mpm --free 2>&1); rc=$?
+calls1=$(cat "$MPM_FAKE_STATE/osascript.calls" 2>/dev/null | wc -l | tr -d ' ')
+check "--free: declining a quit sends nothing" '[ $rc = 0 ] && [ -n "$nCur" ] && contains "$out" "quitting Cursor stops its AI agents" && contains "$out" "Cancelled." && contains "$out" "Nothing was changed." && [ "$calls1" = "$calls0" ]' "$out"
+out=$(printf '%s\ny\n\n' "$nCur" | mpm --free 2>&1)
+calls2=$(cat "$MPM_FAKE_STATE/osascript.calls" 2>/dev/null | wc -l | tr -d ' ')
+check "--free: an approved quit asks the app to quit normally (stubbed, refused)" 'grep -q "to quit" "$MPM_FAKE_STATE/osascript.calls" && [ "$calls2" -gt "$calls1" ] && contains "$out" "macOS did not allow the quit request" && contains "$out" "Nothing was changed."' "$out"
+out=$(printf '%s\n\n' "$nBrave" | mpm --free 2>&1)
+check "--free: a browser step is read-only advice" '[ -n "$nBrave" ] && contains "$out" "BROWSER MEMORY" && contains "$out" "Shift+Esc" && contains "$out" "Nothing was changed."' "$out"
+out=$(printf 'x\n99\n\n' | mpm --free 2>&1)
+check "--free: invalid choices do nothing" 'contains "$out" "Not a number. Nothing was done." && contains "$out" "No such entry. Nothing was done." && contains "$out" "Nothing was changed."' "$out"
+rm -f "$MPM_FAKE_STATE/osascript.calls"   # later tests check that Finder/AppleScript is never called
 
 # Optional tools absent or unusable. On macOS the real tools always exist in /usr/bin and
 # /usr/sbin (the script adds those to PATH), so "missing" is simulated by stubs that fail.
@@ -425,7 +469,7 @@ waitfor() {   # text [count] -> up to 15 s until text appears count times in $WO
 }
 sample() { send n; waitfor "| sample $1\$"; }
 
-check "session starts: banner, keys and first sample" 'waitfor "| sample 1$" && grep -q "Keys: s status" "$WO" && [ -f "$TMP/wdata/state/work.pid" ]' "$(cat "$WO")"
+check "session starts: banner, keys and first sample" 'waitfor "| sample 1$" && grep -q "Keys: f free up memory" "$WO" && [ -f "$TMP/wdata/state/work.pid" ]' "$(cat "$WO")"
 sample 2; sample 3
 check "adaptive polling: interval relaxes after 3 calm samples" 'grep -q "Auto: sampling interval 1800s -> 3600s (stable for 3 samples)" "$WO"' "$(tail -n 5 "$WO")"
 echo "2 18" > "$MPM_FAKE_STATE/pressure"
@@ -434,6 +478,7 @@ check "elevated pressure: normal interval again, one concise hint" 'grep -q "Aut
 check "one elevated sample is not HIGH (sustained threshold)" '! grep -q "HIGH MEMORY PRESSURE" "$WO"'
 sample 5
 check "sustained pressure: HIGH with likely causes and options" 'grep -q "Measuring per-process memory" "$WO" && grep -q "HIGH MEMORY PRESSURE" "$WO" && grep -q "Development processes: " "$WO" && grep -q "d = diagnose" "$WO" && grep -q "nothing is closed automatically" "$WO"' "$(tail -n 20 "$WO")"
+check "warning's advice uses footprints measured first (not RSS)" '[ "$(grep -B1 "^Recommended:" "$WO" | head -n 1)" = "Measuring per-process memory (about 2 s)..." ] && ! grep -q "resident memory only" "$WO"' "$(grep -B3 -A4 "^Recommended:" "$WO")"
 check "high pressure alone stops nothing" 'dev_alive'
 send c
 check "expensive disk scan deferred under high pressure (asked, not run)" 'waitfor "Open the disk tools anyway" && send n && waitfor "Deferred. Press c again" && ! grep -q "DISK DIAGNOSTICS" "$WO"' "$(tail -n 5 "$WO")"
@@ -466,6 +511,26 @@ send d
 check "diagnosis offers choices with benefit and risk" 'waitfor "Choice \[4\]" && grep -q "1) Browser memory" "$WO" && grep -q "Benefit: up to roughly" "$WO"' "$(tail -n 20 "$WO")"
 send 4
 check "ignoring keeps monitoring" 'waitfor "Continuing to monitor." && kill -0 $WP2' "$(tail -n 3 "$WO")"
+
+# Free-up plan (key f): ranked, and the chosen step goes through the full review and typed yes.
+"$TMP/devbin/node" 300 & DV2=$!; disown "$DV2" 2>/dev/null; CHILDREN="$CHILDREN $DV2"
+dv2_alive() { case $(/bin/ps -o args= -p "$DV2" 2>/dev/null) in "$TMP/devbin/node "*) return 0 ;; esac; return 1; }
+i=0; while [ "$i" -lt 30 ] && ! dv2_alive; do sleep 0.1; i=$((i + 1)); done
+printf '%5s %5s @UID@ 2500000   0.0 %s\n' "$DV2" "$$" "$TMP/devbin/node" >> "$MPM_FAKE_STATE/ps.txt"
+send f
+check "free-up plan: ranked steps, each with what it costs" 'waitfor "FREE UP MEMORY - ranked plan" && waitfor "Number to act on" && grep -q "stop process (PID $DV2)" "$WO" && grep -q "quit app" "$WO" && grep -q "If stopped:" "$WO" && dv2_alive' "$(tail -n 30 "$WO")"
+nDV2=$(sed -n '/FREE UP MEMORY - ranked plan/,$p' "$WO" | grep "stop process (PID $DV2)" | tail -n 1 | sed -E 's/^ *([0-9]+)\).*/\1/')
+send "$nDV2"
+check "free-up plan: the chosen step opens the full review; nothing sent yet" 'waitfor "Type .yes. to send SIGTERM" 3 && grep -q "PID:      $DV2" "$WO" && dv2_alive' "$(tail -n 15 "$WO")"
+send yes
+waitfor "PID $DV2 exited."
+grep -v "$TMP/devbin/node" "$MPM_FAKE_STATE/ps.txt" > "$WS/ps3"; mv "$WS/ps3" "$MPM_FAKE_STATE/ps.txt"
+check "free-up plan: approved step done, effect measured, plan offered again" '! dv2_alive && waitfor "Effect so far: macOS free estimate" && waitfor "Number to act on" 2' "$(tail -n 20 "$WO")"
+check "free-up plan: the refreshed plan no longer lists the stopped process" '! sed -n "/Effect so far/,\$p" "$WO" | grep -q "PID $DV2"' "$(sed -n '/Effect so far/,$p' "$WO")"
+send ""
+check "free-up plan: Enter ends it with a before/after summary" 'waitfor "FREE-UP SUMMARY" && waitfor "Done: node" && waitfor "Since the plan started: macOS free estimate"' "$(tail -n 8 "$WO")"
+send a
+check "free-up plan: decision recorded in the session" 'waitfor "approved (free-up plan): stopped node (PID $DV2, sigterm)"' "$(tail -n 12 "$WO")"
 send r
 check "report on demand is saved" 'waitfor "Saved: .*report-session-"' "$(tail -n 3 "$WO")"
 send q; exec 9>&-
