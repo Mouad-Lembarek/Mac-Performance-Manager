@@ -89,9 +89,14 @@ out=$(grep -nE '(echo|printf).*[^0-9.][0-9]+ GB' "$SCRIPT" | grep -vE '^[0-9]+:[
 check "no hard-coded RAM size in user-facing text" '[ -z "$out" ]' "$out"
 out=$(grep -n 'rm -rf' "$SCRIPT" | grep -v 'shell_quote')
 check "printed rm -rf hint quotes its path with shell_quote" '[ -z "$out" ]' "$out"
-out=$(grep -nE 'no automatic kills|Nothing is ever stopped, quit or deleted automatically' "$SCRIPT" "$ROOT/README.md")
+out=$(grep -nE 'no automatic kills|Nothing is ever stopped, quit or deleted automatically' "$SCRIPT" "$ROOT"/*.md "$ROOT"/docs/*.md)
 check "no unconditional 'never automatic' claims (opt-in auto-stop exists)" '[ -z "$out" ]' "$out"
-check "header, help and README all disclose the opt-in auto-stop" 'grep -q "AUTO_STOP_IDLE_\*" "$SCRIPT" && grep -q "Sole exception, OFF by default" "$SCRIPT" && grep -q "AUTO_STOP_IDLE_\*" "$ROOT/README.md"'
+check "header, help, README and guide all disclose the opt-in auto-stop" 'grep -q "AUTO_STOP_IDLE_\*" "$SCRIPT" && grep -q "Sole exception, OFF by default" "$SCRIPT" && grep -q "AUTO_STOP_IDLE_\*" "$ROOT/README.md" && grep -q "AUTO_STOP_IDLE_TSSERVER" "$ROOT/docs/GUIDE.md"'
+# Relative links in the docs point to files that exist (anchors are not checked).
+out=$(for f in "$ROOT"/*.md "$ROOT"/docs/*.md; do
+  grep -oE '\]\([^)#:]+(#[^)]*)?\)' "$f" | sed -E 's/^\]\(//; s/[#)].*$//' | while IFS= read -r l; do
+    [ -e "$(dirname "$f")/$l" ] || echo "${f#"$ROOT"/}: $l"; done; done)
+check "documentation links point to existing files" '[ -z "$out" ]' "$out"
 
 # ---------------------------------------------------------------------------
 echo "[cli]"
@@ -965,6 +970,10 @@ out=$(PATH="$SYSPATH" "$SH" "$ODD/install.sh" 2>&1); rc=$?
 cmd=$(printf '%s\n' "$out" | sed -n 's/^  settings  optional:  //p')
 (cd "$TMP" && eval "$cmd") > /dev/null 2>&1
 check "printed settings command works when pasted (path with spaces and quotes)" '[ $rc = 0 ] && [ -n "$cmd" ] && [ -f "$ODD/config.env" ] && [ "$(readlink "$L")" = "$ODD/mac-performance-manager.sh" ]' "$out"
+echo "MY_OWN_SETTINGS" > "$ODD/config.env"
+(cd "$TMP" && eval "$cmd") > /dev/null 2>&1
+out=$(PATH="$SYSPATH" "$SH" "$ODD/install.sh" 2>&1)
+check "an existing config.env is never overwritten, not even by the printed command" 'grep -q MY_OWN_SETTINGS "$ODD/config.env" && contains "$out" "yours, kept as is" && ! contains "$out" "cp -n"' "$out"
 pathcmd=$(printf '%s\n' "$out" | sed -n "s/^  echo '\(export PATH=.*\)' >> .*/\1/p")
 got=$(PATH="$SYSPATH" "$SH" -c "$pathcmd"' && printf "%s" "${PATH%%:*}"')
 check "printed PATH line adds ~/.local/bin" '[ "$got" = "$HOME/.local/bin" ]' "cmd: $pathcmd -> $got"

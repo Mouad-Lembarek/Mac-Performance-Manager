@@ -90,7 +90,11 @@ install_mpm() {
   say "Installed: $version"
   say "  command   $(tilde "$LINK") -> $(tilde "$target")"
   say "  data      $(tilde "$data") (logs/, reports/, state/ are created on first run)"
-  say "  settings  optional:  cp $(qpath "$data/config.env.example") $(qpath "$data/config.env")"
+  if [ -f "$data/config.env" ]; then
+    say "  settings  $(tilde "$data/config.env") (yours, kept as is; check it with: mpm --check-config)"
+  else
+    say "  settings  optional:  cp -n $(qpath "$data/config.env.example") $(qpath "$data/config.env")"
+  fi
 
   local found; found=$(command -v mpm 2>/dev/null)
   case ":$PATH:" in

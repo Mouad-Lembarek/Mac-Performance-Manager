@@ -1,0 +1,15 @@
+name: Feature request
+description: An idea to make the tool more useful
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would it solve?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like the tool to do?
+      description: The tool never acts without a typed confirmation and has no dependencies; ideas that keep it that way can be accepted.
