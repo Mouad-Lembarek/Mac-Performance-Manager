@@ -14,29 +14,7 @@ Monitor, tells you whether memory is *really* the problem, and names the apps, l
 servers and forgotten dev servers that are using it. It works well on 8 GB Macs and adapts
 its advice to any amount of RAM.
 
-Example output (shortened):
-
-```text
-$ mpm --once
-MacBook Air | Apple M2 8 cores (4P+4E) | macOS 27 | arm64 | Battery 72% discharging
-Status: [WATCH] memory pressure WARNING, macOS free estimate 31%
-
-MEMORY
-  RAM 8.0 GB | pressure WARNING (kernel level 2) | macOS free estimate 31% (~2.5 GB)
-  Used 6.5 GB = app 1.4 GB + wired 1.8 GB + compressed 3.3 GB | cached files 904 MB (reclaimable)
-  Swap 7.8 GB used of 9.0 GB | trend: +280 MB over 22m (stable) | swap I/O: in 170, out 0 pages/s
-
-TOP MEMORY
-      PID   MEM MB   CPU%  GROUP     PROCESS                            STARTED BY
-    45521    1503     0.0  -         tsserver[6.0.3]: semantic          Cursor
-     1018     873     1.8  Cursor    Cursor Helper (Renderer)
-      670     808     0.0  ChatGPT   ChatGPT Classic
-
-RECOMMENDATIONS
-- Memory is getting tight (not yet sustained). If the Mac feels slow, start with the largest consumers below.
-  * Brave: ~7.0 GB across 27 processes. Close unused tabs; Shift+Esc opens Brave's Task Manager...
-  * Cursor: ~2.8 GB across 17 processes. Close Cursor windows/workspaces you are not using...
-```
+![mpm --once on an 8 GB MacBook Air under memory pressure](docs/images/demo.gif)
 
 ## Why it is different
 
