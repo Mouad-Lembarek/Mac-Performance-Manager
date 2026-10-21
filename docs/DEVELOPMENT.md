@@ -102,8 +102,8 @@ Work sessions are driven through a FIFO, with pressure, disk and process table s
 Disk safety, reports without secrets, and static checks (no sudo/killall/pkill/purge,
 no executed `rm -rf`, no network, no bash-4-only syntax, no GNU-only options) are covered too.
 
-**Results on the development Mac** (macOS 27.0.1, Apple Silicon, `/bin/bash` 3.2.57,
-`/usr/bin/awk`): **259 passed, 0 failed, 2 skipped** (about 5 minutes). The two skips are expected there:
+**Expected result on macOS** (macOS 27, Apple Silicon, `/bin/bash` 3.2.57,
+`/usr/bin/awk`): **282 passed, 0 failed, 2 skipped** (about 5 minutes). The two skips are expected on macOS:
 
 | Skipped test | Why |
 |---|---|

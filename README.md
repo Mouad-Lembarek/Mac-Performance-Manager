@@ -11,12 +11,14 @@
 A small terminal tool for developers who run Cursor, AI agents, Docker, Node.js, Python and a
 browser full of tabs on a Mac with too little RAM. It reads the same signals as Activity
 Monitor, tells you whether memory is *really* the problem, and names the apps, language
-servers and forgotten dev servers that are using it. Built on, and for, an 8 GB MacBook;
-it adapts to any amount of RAM.
+servers and forgotten dev servers that are using it. It works well on 8 GB Macs and adapts
+its advice to any amount of RAM.
+
+Example output (shortened):
 
 ```text
 $ mpm --once
-MacBook Pro (Mac15,3) | Apple M3 8 cores (4P+4E) | macOS 27.0.1 | arm64 | Battery 88% discharging
+MacBook Air | Apple M2 8 cores (4P+4E) | macOS 27 | arm64 | Battery 72% discharging
 Status: [WATCH] memory pressure WARNING, macOS free estimate 31%
 
 MEMORY

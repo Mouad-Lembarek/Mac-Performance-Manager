@@ -128,7 +128,7 @@ windows; Node.js and Python processes keep their own group.
 
 Summed RSS can be wrong in both directions: it double-counts memory that Chromium/Electron
 helper processes share, and it leaves out compressed and swapped-out memory, which on a Mac
-under pressure can be most of an app's memory (one real case: Brave at 0.8 GB RSS, 3.9 GB
+under pressure can be most of an app's memory (for example, a browser at 0.8 GB RSS but 3.9 GB
 footprint). Footprint sums are closer to reality but still approximate. The tool labels which
 one you are looking at. In work mode, the advice that comes with a warning is always based on a
 fresh footprint measurement; where a view has to use RSS (live mode), the advice says that
@@ -375,7 +375,7 @@ opt-in `AUTO_*` rules described above, each off unless you enable it.
 Reports are pruned to `REPORT_KEEP`. Session history in memory is capped at 40 entries per
 list, and `logs/events.log` rotates at `LOG_MAX_KB`.
 
-**Cost, measured on the development Mac** (8 GB, under memory pressure): about 0.85 s of CPU
+**Cost, measured on an 8 GB Mac under memory pressure:** about 0.85 s of CPU
 per 100 s at the default interval, 1-4 MB of memory for the manager, and less than 1 KB
 written per sample. Each detailed `top` sample costs about 1.4 s of CPU.
 
@@ -454,7 +454,7 @@ written to disk. `.gitignore` excludes all of the above plus your `config.env`.
 
 ## Limitations
 
-- The test suite passes on macOS 27.0.1 (Apple Silicon, bash 3.2.57), but with stubbed tool
+- The test suite passes on macOS 27 (Apple Silicon, bash 3.2.57), but with stubbed tool
   output. Real-world output formats of `top`, `lsof`, `pmset` and `docker` on other macOS
   versions should be checked on first use. See [DEVELOPMENT.md](DEVELOPMENT.md#tests) for what is not covered.
 - Window and workspace counts for Cursor are estimates; memory per extension is not
