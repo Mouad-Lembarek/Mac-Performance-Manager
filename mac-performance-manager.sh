@@ -22,7 +22,7 @@ set -u
 export LC_ALL=C          # stable number formats (12.5, not 12,5) for parsing
 umask 077                # logs/reports readable only by you
 
-MPM_VERSION="1.0.0"
+MPM_VERSION="1.1.0"
 TAB=$(printf '\t')
 NL='
 '
@@ -61,6 +61,7 @@ init_globals() {
   DISK_OK=0; DISK_TARGET="/"; DISK_TOTAL_MB=0; DISK_AVAIL_MB=0; DISK_USED_PCT=0; DISK_STATE="UNKNOWN"
   BATT_SRC=""; BATT_PCT=""; BATT_STATE=""; UPTIME_SEC=""; LOAD1=""; LOAD5=""; LOAD15=""
   PROCS=""; PROC_MEM_SRC="RSS"; CPU_SRC="ps"; CPU_USER=""; CPU_SYS=""; CPU_IDLE=""; CPU_TOTAL_PCT=0
+  RECO_ACT_HINT="To act on these: mpm --free (ranked plan; you approve each step)."
   SUM_CPU=0; SUM_NPROCS=0; SUM_CUR_N=0; SUM_CUR_MEM=0; SUM_CUR_REND=0; SUM_CUR_PLUG=0; SUM_CUR_MAIN=0
   SUM_NODE_N=0; SUM_NODE_MEM=0; SUM_PY_N=0; SUM_PY_MEM=0; SUM_BRAVE_N=0; SUM_BRAVE_MEM=0
   SUM_DOCK_N=0; SUM_DOCK_MEM=0; SUM_AI_N=0; SUM_AI_MEM=0
@@ -258,6 +259,7 @@ set_defaults() {
   REPORT_KEEP=20
   NOTIFICATIONS_ENABLED=true
   NOTIFY_COOLDOWN_MIN=30
+  RECOVERY_CALM_MIN=5
   KILL_GRACE_SEC=10
   SCAN_MAX_DEPTH=6
   COLOR=auto
@@ -322,6 +324,7 @@ apply_config_value() {
     HISTORY_MAX_LINES) cfg_int "$key" "$val" 100 100000 "$ln" ;;
     REPORT_KEEP) cfg_int "$key" "$val" 1 1000 "$ln" ;;
     NOTIFY_COOLDOWN_MIN) cfg_int "$key" "$val" 1 1440 "$ln" ;;
+    RECOVERY_CALM_MIN) cfg_int "$key" "$val" 0 120 "$ln" ;;
     KILL_GRACE_SEC) cfg_int "$key" "$val" 1 120 "$ln" ;;
     SCAN_MAX_DEPTH) cfg_int "$key" "$val" 1 20 "$ln" ;;
     LOGGING_ENABLED|HISTORY_ENABLED|NOTIFICATIONS_ENABLED|SESSION_REPORT_ENABLED|AUTO_STOP_IDLE_TSSERVER|AUTO_STOP_IDLE_DEVSERVER|AUTO_CLEAN_MANAGER_TEMP) cfg_bool "$key" "$val" "$ln" ;;
@@ -394,7 +397,7 @@ print_config() {
     PRESSURE_WARN_FREE_PCT PRESSURE_CRIT_FREE_PCT SWAP_GROWTH_WARN_MB SWAP_TREND_WINDOW_MIN \
     SWAPOUT_RATE_WARN_PAGES CPU_PROC_WARN_PCT CPU_TOTAL_WARN_PCT DISK_FREE_WARN_GB DISK_FREE_CRIT_GB \
     APP_HEAVY_PCT APP_CANDIDATE_MIN_MB TOP_N LOGGING_ENABLED LOG_MAX_KB HISTORY_ENABLED \
-    HISTORY_INTERVAL_SEC HISTORY_MAX_LINES REPORT_KEEP NOTIFICATIONS_ENABLED NOTIFY_COOLDOWN_MIN \
+    HISTORY_INTERVAL_SEC HISTORY_MAX_LINES REPORT_KEEP NOTIFICATIONS_ENABLED NOTIFY_COOLDOWN_MIN RECOVERY_CALM_MIN \
     KILL_GRACE_SEC SCAN_MAX_DEPTH COLOR DATA_DIR; do
     printf '  %-26s %s\n' "$k" "${!k}"
   done
@@ -1011,13 +1014,39 @@ advice_for_group() {   # app cat count mem_mb
     Node.js|Python|"JS runtime") echo "$app: $cnt processes using ~$mem. Check menu 8 for dev servers, watchers or agents you no longer need." ;;
     Database) echo "$app (database): ~$mem. Stop it via its own tool (brew services stop / docker stop) if you are not using it now." ;;
     "Local AI") echo "$app (local AI model runtime): ~$mem. A loaded model holds that memory even when idle, out of $(fmt_mb "$MEM_TOTAL_MB") RAM in total; unload it when idle (e.g. ollama stop MODEL)." ;;
-    App) echo "$app: ~$mem across $cnt processes. Quit it if you are not actively using it (menu 10 > Quit app gracefully)." ;;
+    App) case $(browser_engine "$app") in
+        gecko) echo "$app: ~$mem across $cnt processes. Close unused tabs; about:processes shows which tabs use memory and about:unloads unloads background tabs. Running two browsers at once doubles the cost: quit the one you are not using." ;;
+        chromium) echo "$app: ~$mem across $cnt processes. Close unused tabs; Shift+Esc (Window > Task Manager) shows heavy tabs; turn on Memory Saver if it has one. Running two browsers at once doubles the cost: quit the one you are not using." ;;
+        webkit) echo "$app: ~$mem across $cnt processes. Close unused tabs and windows; Safari frees background tabs on its own under pressure." ;;
+        *) echo "$app: ~$mem across $cnt processes. Quit it if you are not actively using it (menu 10 > Quit app gracefully)." ;;
+      esac ;;
     *) echo "$app: ~$mem across $cnt processes. Investigate if this is unexpected." ;;
   esac
 }
 
+browser_engine() {   # app name -> gecko | chromium | webkit | (nothing)
+  case $1 in
+    Zen|"Zen Browser"|Firefox*|Floorp|LibreWolf|Waterfox|"Mullvad Browser"|"Tor Browser") echo gecko ;;
+    Brave|Chrome|"Google Chrome"*|Chromium|Arc|"Microsoft Edge"*|Vivaldi|Opera*|Dia|Comet|Helium|Thorium) echo chromium ;;
+    Safari*|Orion) echo webkit ;;
+  esac
+}
+
+# macOS background work that is expected to use CPU for a while and stops on its own.
+system_job_text() {   # process name -> explanation, or nothing
+  case $1 in
+    mediaanalysisd|photoanalysisd) echo "macOS analysing your photos (Photos/Spotlight); normal after imports or updates and stops on its own, faster on power" ;;
+    mds|mds_stores|mdworker*|mdbulkimport|corespotlightd) echo "Spotlight indexing; normal after updates or many new files and stops on its own" ;;
+    backupd*) echo "Time Machine backup in progress" ;;
+    softwareupdated|"com.apple.MobileSoftwareUpdate"*) echo "macOS downloading or preparing an update" ;;
+    bird|cloudd|fileproviderd) echo "iCloud syncing files" ;;
+    XprotectService|XProtect*|MRT) echo "macOS malware scan (XProtect); short and expected" ;;
+    kernel_task) echo "macOS throttling the CPU to cool down, or heavy I/O; reduce load and check fans/heat" ;;
+  esac
+}
+
 build_recommendations() {
-  local any=0 heavy_mb line app cat cnt mem rss cpu pid name listed
+  local any=0 heavy_mb line app cat cnt mem rss cpu pid name listed why
   # APP_HEAVY_PCT of RAM, capped at APP_HEAVY_CAP_MB: on a 64-128 GB Mac 10% would be 6-13 GB,
   # and pressure there is usually several 2-5 GB apps, none of which would be named.
   heavy_mb=$((MEM_TOTAL_MB * APP_HEAVY_PCT / 100))
@@ -1038,6 +1067,7 @@ build_recommendations() {
       done <<EOF
 $listed
 EOF
+      echo "  $RECO_ACT_HINT"
       ;;
   esac
   if [ "$SWAP_TREND" = growing ] && [ "$MEM_ELEVATED" = 1 ]; then
@@ -1047,7 +1077,9 @@ EOF
   if [ -n "$SUSTAINED_CPU" ]; then
     while IFS="$TAB" read -r pid cnt name cpu; do
       [ -n "$pid" ] || continue
-      echo "- PID $pid ($name) has been at/above ${CPU_PROC_WARN_PCT}% CPU for $cnt samples (now ${cpu}%). Check whether this is expected work (build, indexing, tests); if not, investigate it (menu 10)."
+      why=$(system_job_text "$name")
+      if [ -n "$why" ]; then echo "- PID $pid ($name) at ${cpu}% CPU for $cnt samples: $why. No action needed unless it lasts for hours."
+      else echo "- PID $pid ($name) has been at/above ${CPU_PROC_WARN_PCT}% CPU for $cnt samples (now ${cpu}%). Check whether this is expected work (build, indexing, tests); if not, investigate it (menu 10)."; fi
       any=1
     done <<EOF
 $SUSTAINED_CPU
@@ -1936,7 +1968,7 @@ plan_items() {
       [ -n "$pid" ] || continue
       case $self in *" $pid "*) continue ;; esac   # the terminal running this manager
       [ "$kb" -ge $((APP_CANDIDATE_MIN_MB * 1024)) ] || continue
-      case $app in Brave|Chrome|Arc|Firefox|Safari|"Microsoft Edge"|Vivaldi|Opera) kind=tabs ;; *) kind=app ;; esac
+      if [ -n "$(browser_engine "$app")" ]; then kind=tabs; else kind=app; fi
       cpu=$(group_totals | awk -F'\t' -v a="$app" '$1 == a { print $6; exit }')
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$kb" "$pid" "$app" "$bundle" "${cpu:-0}"
     done
@@ -2141,9 +2173,12 @@ session_init() {
   S_CMD=""; S_FORCE=0; S_EOF_N=0; S_DISK_HINT=""; S_RECO_PRINTED=0; S_PRECISE_TS=0; S_PRECISE_N=0
   S_IDLE_BASE=""; S_AP_SKIP=" "; S_AP=""; S_AP_LAST=0; S_AP_N=0; S_AP_WATCH=""; S_AUTO_SEEN=""
   S_PAUSE_TS=0; S_PAUSE_DEV=0; S_INEFF_TS=0; S_INEFF_DEV=0
-  S_HIGH_TOTAL=0; S_HIGH_SINCE=0; S_ACTION_LOG=""
+  S_HIGH_TOTAL=0; S_HIGH_SINCE=0; S_ACTION_LOG=""; S_CALM_SINCE=0; S_LAST_HIGH_TS=0; S_WHY_SHOWN=0
+  RECO_ACT_HINT="To act on these: press f (ranked plan; you approve each step)."
   if [ -t 0 ]; then S_INPUT=tty; elif [ -p /dev/stdin ]; then S_INPUT=pipe; else S_INPUT=none; fi
 }
+
+verdict_high() { case $VERDICT in HIGH|CRITICAL) return 0 ;; esac; return 1; }
 
 session_say() { is_tty && printf '\r\033[K'; printf '%s\n' "$*"; }
 
@@ -2151,11 +2186,13 @@ session_say() { is_tty && printf '\r\033[K'; printf '%s\n' "$*"; }
 # memory and can undercount heavy apps several times over on a pressured Mac. A diagnosis
 # therefore uses one `top` sample (physical footprint, ~1-2 s CPU). It runs only when you
 # ask, or once when a pressure warning starts, and is reused until the next routine sample.
-session_fresh_precise() {
+session_fresh_precise() {   # [quiet]  (quiet: background checks print nothing)
   if [ "$S_PRECISE_TS" != 0 ] && [ "$PROC_MEM_SRC" = FOOTPRINT ]; then S_CACHE_HITS=$((S_CACHE_HITS + 1)); return 0; fi
   [ "$HAVE_TOP" = 1 ] || return 0
-  is_tty && printf '\r\033[K'
-  echo "Measuring per-process memory (about 2 s)..."
+  if [ "${1:-}" != quiet ]; then
+    is_tty && printf '\r\033[K'
+    echo "Measuring per-process memory (about 2 s)..."
+  fi
   collect_procs precise
   S_PRECISE_TS=$(now_epoch); S_PRECISE_N=$((S_PRECISE_N + 1))
   # The report's "largest groups at the worst moment" should use these footprints, not RSS.
@@ -2257,6 +2294,11 @@ session_pressure_brief() {
     group_totals | awk -F'\t' '$2 != "System" { printf "  - %s ~%.1f GB (%d processes)\n", $1, $4 / 1048576, $3; if (++n == 4) exit }'
   fi
   local d; d=$(dev_summary); [ -n "$d" ] && echo "Development processes: $d"
+  if [ "$S_WHY_SHOWN" = 0 ] && [ -n "$FREE_PCT" ] && [ "$FREE_PCT" -ge "$PRESSURE_WARN_FREE_PCT" ]; then
+    S_WHY_SHOWN=1
+    echo "Why HIGH with $FREE_PCT% free? macOS itself reports pressure ${PRESS_LEVEL:+level $PRESS_LEVEL }and has to compress/swap to keep up;"
+    echo "  the free estimate counts memory it can still squeeze, so it looks fine while the Mac is already slowing down."
+  fi
   echo "Options (monitoring continues): f = free up memory (ranked plan, you approve each step), d = diagnose,"
   echo "  k = stop a dev process, t = top consumers."
   if auto_rules_on; then
@@ -2287,6 +2329,13 @@ session_recovery() {   # now
 session_update_mode() {   # now
   local now=$1 old=$S_MODE new target reason
   case $VERDICT in HIGH|CRITICAL) new=HIGH ;; WATCH) new=ELEVATED ;; OK) new=NORMAL ;; *) new=$old ;; esac
+  # Hysteresis: one calmer sample is not a recovery. Stay HIGH until calm for RECOVERY_CALM_MIN.
+  if [ "$old" = HIGH ] && [ "$new" != HIGH ]; then
+    [ "$S_CALM_SINCE" = 0 ] && S_CALM_SINCE=$now
+    [ $((now - S_CALM_SINCE)) -lt $((RECOVERY_CALM_MIN * 60)) ] && new=HIGH
+  else
+    S_CALM_SINCE=0
+  fi
   if [ "$old" = HIGH ] && [ "$new" != HIGH ] && [ "$S_HIGH_SINCE" != 0 ]; then
     S_HIGH_TOTAL=$((S_HIGH_TOTAL + now - S_HIGH_SINCE)); S_HIGH_SINCE=0
   fi
@@ -2294,9 +2343,13 @@ session_update_mode() {   # now
   if [ "$new" = HIGH ] && [ "$old" != HIGH ]; then
     S_HIGH_SINCE=$now
     S_PROBLEM_TS=$now; S_PROBLEM_USER_N=$S_USER_N; S_PROBLEM_GROUPS=$(group_totals)
-    session_pressure_brief; S_LAST_HINT_TS=$now
-  elif [ "$new" = HIGH ] && [ $((now - S_LAST_HINT_TS)) -ge $((NOTIFY_COOLDOWN_MIN * 60)) ]; then
-    session_pressure_brief; S_LAST_HINT_TS=$now
+    if [ "$S_LAST_HIGH_TS" != 0 ] && [ $((now - S_LAST_HIGH_TS)) -lt $((NOTIFY_COOLDOWN_MIN * 60)) ]; then
+      session_say "High memory pressure again ($VERDICT_REASON). Press f to free up memory, d to diagnose."
+    else
+      session_pressure_brief; S_LAST_HINT_TS=$now; S_LAST_HIGH_TS=$now
+    fi
+  elif [ "$new" = HIGH ] && [ "$S_CALM_SINCE" = 0 ] && [ $((now - S_LAST_HINT_TS)) -ge $((NOTIFY_COOLDOWN_MIN * 60)) ]; then
+    session_pressure_brief; S_LAST_HINT_TS=$now; S_LAST_HIGH_TS=$now
   elif [ "$new" = ELEVATED ] && [ "$old" = NORMAL ]; then
     if [ "$S_LAST_HINT_TS" = 0 ] || [ $((now - S_LAST_HINT_TS)) -ge $((NOTIFY_COOLDOWN_MIN * 60)) ]; then
       S_LAST_HINT_TS=$now
@@ -2540,7 +2593,8 @@ session_auto_note_once() {   # key text: avoid repeating the same explanation ev
 }
 
 session_auto_schedule() {   # now
-  [ -z "$S_AP" ] && [ "$S_MODE" = HIGH ] && auto_rules_on || return 0
+  # The current verdict, not S_MODE: the mode stays HIGH during the recovery calm period.
+  [ -z "$S_AP" ] && [ "$S_MODE" = HIGH ] && verdict_high && auto_rules_on || return 0
   [ -n "$S_IDLE_BASE" ] || return 0
   local now=$1 cands line rank mem key kind t pids since v why
   if [ "$S_AP_N" -ge "$AUTO_MAX_ACTIONS" ]; then
@@ -2552,7 +2606,7 @@ session_auto_schedule() {   # now
   printf '%s\n' "$S_IDLE_BASE" | awk -F'\t' -v now="$now" -v ti=$((AUTO_TSSERVER_IDLE_MIN * 60)) -v di=$((AUTO_DEVSERVER_IDLE_MIN * 60)) \
     -v pt="$S_PAUSE_TS" -v pd="$S_PAUSE_DEV" -v skip="$S_AP_SKIP" \
     'NF >= 6 && index(skip, " " $1 " ") == 0 && (($4 == "ts" && !pt && now - $3 >= ti) || ($4 == "dev" && !pd && now - $3 >= di)) { f = 1 } END { exit !f }' || return 0
-  session_fresh_precise
+  session_fresh_precise quiet
   cands=$( { printf '%s\n' "$S_IDLE_BASE"; echo '#P'; printf '%s\n' "$PROCS"; } | awk -F'\t' -v now="$now" \
     -v ti=$((AUTO_TSSERVER_IDLE_MIN * 60)) -v di=$((AUTO_DEVSERVER_IDLE_MIN * 60)) -v pt="$S_PAUSE_TS" -v pd="$S_PAUSE_DEV" -v skip="$S_AP_SKIP" '
     $0 == "#P" { p = 1; next }
@@ -2599,7 +2653,7 @@ $S_AP
 END_AP
   now=$(now_epoch); [ "$now" -ge "$due" ] || return 0
   S_AP=""
-  if [ "$S_MODE" != HIGH ]; then
+  if [ "$S_MODE" != HIGH ] || ! verdict_high; then
     session_say "Auto: memory pressure eased; PID $pid left running."
     session_note AUTO "did not stop PID $pid ($kind): pressure eased during the notice period"; return 0
   fi
@@ -2734,12 +2788,13 @@ session_top() {
 
 session_browser() {
   section "BROWSER MEMORY"
-  printf '%s\n' "$PROCS" | awk -F'\t' '$9 == "Brave" || $8 == "Chrome" || $8 ~ /^(Arc|Firefox|Microsoft Edge)$/ { k = $8; n[k]++; m[k] += $6; if ($12 == "renderer") r[k]++ }
-    END { for (k in n) { printf "  %-14s ~%.1f GB in %d processes (%d renderers: roughly tabs, extensions and frames)\n", k, m[k] / 1048576, n[k], r[k]; t++ }
-          if (!t) print "  No Chromium-based browser found." }'
+  printf '%s\n' "$PROCS" | awk -F'\t' '$9 == "Brave" || $8 == "Chrome" || $8 ~ /^(Arc|Firefox.*|Microsoft Edge|Zen|Zen Browser|Floorp|LibreWolf|Waterfox|Vivaldi|Opera|Safari)$/ { k = $8; n[k]++; m[k] += $6; if ($12 == "renderer" || $10 ~ /^plugin-container/) r[k]++ }
+    END { for (k in n) { printf "  %-14s ~%.1f GB in %d processes (%d content processes: roughly tabs, extensions and frames)\n", k, m[k] / 1048576, n[k], r[k]; t++ }
+          if (t > 1) print "  More than one browser is running: each keeps its own engine in memory. Quit the one you are not using."
+          if (!t) print "  No browser found." }'
   echo "  The manager cannot see individual tabs (no API, and it would be private data)."
-  echo "  In Brave: Shift+Esc opens its Task Manager; sort by Memory and close tabs you do not need."
-  echo "  Memory Saver (Settings > System) unloads background tabs automatically."
+  echo "  Brave/Chrome/Arc/Edge: Shift+Esc opens the Task Manager; sort by Memory. Memory Saver (Settings > System) unloads background tabs."
+  echo "  Zen/Firefox: about:processes shows memory per tab; about:unloads unloads background tabs."
 }
 
 session_quit_app() {

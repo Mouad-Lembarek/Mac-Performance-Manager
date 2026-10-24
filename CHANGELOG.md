@@ -2,6 +2,32 @@
 
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-10-24
+
+### Added
+
+- Browser-aware advice for Zen, Firefox and other Gecko browsers (`about:processes`,
+  `about:unloads`), for Chrome, Arc, Edge, Vivaldi and Opera (Task Manager, Memory Saver), and
+  for Safari. The free-up plan treats all of them as browsers, and the browser view (`d`,
+  then 1) lists them and says when two browsers are running at once.
+- Known macOS background jobs at high CPU (`mediaanalysisd` photo analysis, Spotlight,
+  Time Machine, iCloud, software update, XProtect) are explained instead of "investigate it".
+- Every list of memory consumers ends with how to act on it: `f` in work mode, `mpm --free`
+  elsewhere (ranked plan, you approve each step).
+- `RECOVERY_CALM_MIN` (default 5): minutes of calm before RECOVERY is reported.
+
+### Fixed
+
+- Work mode printed "Measuring per-process memory (about 2 s)..." on every sample during high
+  pressure when the opt-in auto-stop rules had idle candidates they then refused. Those checks
+  now measure silently.
+- HIGH and RECOVERY alternated every few minutes when pressure hovered at the threshold.
+  RECOVERY now needs a calm period, and HIGH coming back within the cooldown prints one line.
+  The opt-in auto-stop rules still act only while pressure is high right now, never during
+  that calm period.
+- The HIGH brief explains, once per session, why pressure can be HIGH while the macOS free
+  estimate still looks comfortable.
+
 ## [1.0.0] - 2026-10-20
 
 First public release.

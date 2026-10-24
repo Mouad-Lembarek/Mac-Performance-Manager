@@ -205,6 +205,25 @@ out=$(src 'SUSTAINED_SAMPLES=2; SWAP_TREND=stable; PRESS_LEVEL=1; FREE_PCT=50; S
 check "sustained active swap-out escalates" '[ "$out" = "WATCH HIGH" ]' "$out"
 out=$(src 'SUSTAINED_SAMPLES=3; PRESS_LEVEL=""; FREE_PCT=""; evaluate_state; echo "$VERDICT"')
 check "unreadable pressure -> UNKNOWN, not a guess" '[ "$out" = UNKNOWN ]' "$out"
+out=$(src 'session_init; RECOVERY_CALM_MIN=5; NOTIFY_COOLDOWN_MIN=30; DISK_STATE=OK; WORK_RELAX_AFTER_SAMPLES=0
+  group_totals() { :; }; session_pressure_brief() { echo BRIEF; }; session_recovery() { echo RECOVERY; }
+  session_say() { echo "$1" | cut -c1-26; }; session_auto_schedule() { :; }; session_note() { :; }
+  VERDICT=HIGH;  session_update_mode 1000; VERDICT=WATCH; session_update_mode 1030
+  VERDICT=HIGH;  session_update_mode 1060; VERDICT=WATCH; session_update_mode 1090
+  echo "mode=$S_MODE"; VERDICT=OK; session_update_mode 1400; echo "mode=$S_MODE"
+  VERDICT=HIGH;  session_update_mode 1500' | paste -sd'|' -)
+check "HIGH needs a calm period to recover; HIGH again within the cooldown is one line" '[ "$out" = "BRIEF|mode=HIGH|RECOVERY|mode=NORMAL|High memory pressure again" ]' "$out"
+out=$(src 'session_init; RECOVERY_CALM_MIN=0; NOTIFY_COOLDOWN_MIN=30; DISK_STATE=OK; WORK_RELAX_AFTER_SAMPLES=0
+  group_totals() { :; }; session_pressure_brief() { echo BRIEF; }; session_recovery() { echo RECOVERY; }
+  session_say() { :; }; session_auto_schedule() { :; }; session_note() { :; }
+  VERDICT=HIGH; session_update_mode 1000; VERDICT=WATCH; session_update_mode 1030' | paste -sd'|' -)
+check "RECOVERY_CALM_MIN=0 recovers on the first calm sample" '[ "$out" = "BRIEF|RECOVERY" ]' "$out"
+out=$(src 'MEM_TOTAL_MB=8192
+  for a in Zen Firefox Arc Chrome Safari Notion; do printf "%s=%s " "$a" "$(browser_engine "$a")"; done; echo
+  advice_for_group Zen App 24 4800; advice_for_group Arc App 12 2000; advice_for_group Notion App 5 900
+  system_job_text mediaanalysisd; system_job_text mdworker_shared; system_job_text node')
+check "browsers grouped by engine, with engine-specific advice" 'contains "$out" "Zen=gecko Firefox=gecko Arc=chromium Chrome=chromium Safari=webkit Notion= " && contains "$out" "Zen: ~4.7 GB across 24 processes. Close unused tabs; about:processes" && contains "$out" "Arc: ~2.0 GB across 12 processes. Close unused tabs; Shift+Esc" && contains "$out" "Notion: ~900 MB across 5 processes. Quit it if"' "$out"
+check "known macOS background jobs are explained" 'contains "$out" "macOS analysing your photos" && contains "$out" "Spotlight indexing" && [ "$(printf "%s\n" "$out" | wc -l | tr -d " ")" = 6 ]' "$out"
 out=$(src 'SWAP_OK=1; SWAP_TREND_WINDOW_MIN=30; SWAP_GROWTH_WARN_MB=1024; now=$(date +%s)
   SWAP_HIST=$(printf "%s\t%s" $((now - 1500)) 10000); SWAP_USED_MB=12000; update_swap_trend $now; a=$SWAP_TREND
   SWAP_HIST=$(printf "%s\t%s" $((now - 1500)) 11800); SWAP_USED_MB=12000; update_swap_trend $now; b=$SWAP_TREND
@@ -448,7 +467,7 @@ echo "[work session]"
 # throw-away process (a symlink named node -> sleep inside the temporary folder).
 WS="$TMP/ws"; mkdir -p "$WS"
 CFGW="$WS/c.env"
-printf 'DATA_DIR=%s/wdata\nNOTIFICATIONS_ENABLED=false\nCOLOR=never\nWORK_INTERVAL_SEC=1800\nWORK_RELAXED_INTERVAL_SEC=3600\nWORK_RELAX_AFTER_SAMPLES=3\nSUSTAINED_SAMPLES=2\nKILL_GRACE_SEC=3\n' "$TMP" > "$CFGW"
+printf 'DATA_DIR=%s/wdata\nNOTIFICATIONS_ENABLED=false\nCOLOR=never\nWORK_INTERVAL_SEC=1800\nWORK_RELAXED_INTERVAL_SEC=3600\nWORK_RELAX_AFTER_SAMPLES=3\nSUSTAINED_SAMPLES=2\nKILL_GRACE_SEC=3\nRECOVERY_CALM_MIN=0\n' "$TMP" > "$CFGW"
 rm -f "$MPM_FAKE_STATE/pressure" "$MPM_FAKE_STATE/df.txt" "$MPM_FAKE_STATE/ps.txt"
 trash_n0=$(ls -A "$HOME/.Trash" | wc -l | tr -d ' ')
 mkdir -p "$TMP/devbin"; ln -s "$(PATH=/usr/bin:/bin command -v sleep)" "$TMP/devbin/node"
@@ -676,10 +695,12 @@ check "dev rule: exactly one automatic SIGTERM, never SIGKILL, never a restart" 
 for p in $L2 $L3 $L4 $L5; do kill -TERM "$p" 2>/dev/null; done
 
 # Limits and measurement logic, checked directly.
-out=$(src 'session_init; AUTO_STOP_IDLE_TSSERVER=true; S_MODE=HIGH; S_IDLE_BASE=x; AUTO_MAX_ACTIONS=4; S_AP_N=4; session_auto_schedule $(date +%s)')
+out=$(src 'session_init; AUTO_STOP_IDLE_TSSERVER=true; S_MODE=HIGH; VERDICT=HIGH; S_IDLE_BASE=x; AUTO_MAX_ACTIONS=4; S_AP_N=4; session_auto_schedule $(date +%s)')
 check "AUTO_MAX_ACTIONS caps automatic actions per session" 'contains "$out" "AUTO_MAX_ACTIONS (4) reached"' "$out"
-out=$(src 'session_init; AUTO_STOP_IDLE_TSSERVER=true; S_MODE=HIGH; S_IDLE_BASE=x; S_AP_N=1; S_AP_LAST=$(( $(date +%s) - 30 )); AUTO_COOLDOWN_MIN=10; session_auto_schedule $(date +%s)')
+out=$(src 'session_init; AUTO_STOP_IDLE_TSSERVER=true; S_MODE=HIGH; VERDICT=HIGH; S_IDLE_BASE=x; S_AP_N=1; S_AP_LAST=$(( $(date +%s) - 30 )); AUTO_COOLDOWN_MIN=10; session_auto_schedule $(date +%s)')
 check "AUTO_COOLDOWN_MIN spaces automatic actions" 'contains "$out" "waiting for the 10-minute cooldown"' "$out"
+out=$(src 'session_init; AUTO_STOP_IDLE_TSSERVER=true; S_MODE=HIGH; VERDICT=WATCH; S_IDLE_BASE=x; AUTO_MAX_ACTIONS=4; S_AP_N=4; session_auto_schedule $(date +%s); echo "rc=$?"')
+check "no automatic action during the recovery calm period (pressure already lower)" '[ "$out" = "rc=0" ]' "$out"
 out=$(src 'session_init; S_MODE=NORMAL; S_IDLE_BASE="ts:1	0	0	ts	1	1"; AUTO_STOP_IDLE_TSSERVER=true; session_auto_schedule $(date +%s); echo "AP=[$S_AP]"')
 check "no automatic action without sustained HIGH pressure" 'contains "$out" "AP=[]"' "$out"
 out=$(src 'session_init; AUTO_MAX_INEFFECTIVE=2; session_auto_ineffective dev "first"; session_auto_ineffective dev "second"; echo "paused=$S_PAUSE_DEV ts=$S_PAUSE_TS"')

@@ -275,13 +275,17 @@ command): the pidfile in `state/` records its PID and start time.
   consumers), **HIGH** (sustained for `SUSTAINED_SAMPLES` samples: the likely causes,
   development processes and the options below), then **RECOVERY** (what dropped since the
   problem started, and the actions you took meanwhile, reported as correlation, not proof).
+  RECOVERY needs `RECOVERY_CALM_MIN` (5) calm minutes, so a pressure level that flips back and
+  forth gives one alert, not a new one every few minutes; if HIGH returns within
+  `NOTIFY_COOLDOWN_MIN`, you get one short line instead of the full brief.
   Large swap alone is history, not a problem. Warnings need current pressure or active swap-out.
 - Automatic actions change only the manager's **own** behaviour, and each one is logged:
   - after `WORK_RELAX_AFTER_SAMPLES` calm samples it samples every `WORK_RELAXED_INTERVAL_SEC`
     (60 s). On any pressure it goes back to 30 s, and the slower setting ends with the session;
   - warnings and recommendations are rate-limited (`NOTIFY_COOLDOWN_MIN`);
   - a detailed per-process sample (`top`, about 1-2 s of CPU) runs only when you ask or when a
-    warning starts, and is reused until the next routine sample;
+    warning starts, and is reused until the next routine sample (the opt-in auto-stop
+    rules measure silently);
   - expensive disk scans ask first while pressure is high;
   - on exit it stops only helper processes it started, after checking their parent PID.
 
@@ -403,6 +407,7 @@ Most useful knobs:
 | `SWAPOUT_RATE_WARN_PAGES` | 50 | short swap bursts are flagged too eagerly |
 | `CPU_PROC_WARN_PCT` | 80 | builds/indexing routinely trigger CPU warnings |
 | `NOTIFICATIONS_ENABLED` | true | set false for terminal-only output |
+| `RECOVERY_CALM_MIN` | 5 | HIGH/RECOVERY still alternates on your Mac (0 = recover on the first calm sample) |
 | `WORK_INTERVAL_SEC` | 30 | the manager's own CPU use matters more than reaction time |
 | `WORK_RELAXED_INTERVAL_SEC` | 60 | calm periods can be sampled even less often (must be ≥ `WORK_INTERVAL_SEC`) |
 | `WORK_RELAX_AFTER_SAMPLES` | 10 | you want it to relax later (0 = never relax) |

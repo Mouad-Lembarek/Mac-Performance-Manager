@@ -24,7 +24,7 @@ body:
     id: macos
     attributes:
       label: macOS version and mpm version
-      placeholder: "macOS 15.1, mac-performance-manager 1.0.0 (mpm --version)"
+      placeholder: "macOS 15.1, mac-performance-manager 1.1.0 (mpm --version)"
     validations:
       required: true
   - type: textarea

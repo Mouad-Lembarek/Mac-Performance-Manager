@@ -103,7 +103,7 @@ Disk safety, reports without secrets, and static checks (no sudo/killall/pkill/p
 no executed `rm -rf`, no network, no bash-4-only syntax, no GNU-only options) are covered too.
 
 **Expected result on macOS** (macOS 27, Apple Silicon, `/bin/bash` 3.2.57,
-`/usr/bin/awk`): **282 passed, 0 failed, 2 skipped** (about 5 minutes). The two skips are expected on macOS:
+`/usr/bin/awk`): **287 passed, 0 failed, 2 skipped** (about 5 minutes). The two skips are expected on macOS:
 
 | Skipped test | Why |
 |---|---|
